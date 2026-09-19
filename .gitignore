@@ -10,3 +10,10 @@ index-before-*.js
 
 session/
 session-BACKUP-BEFORE-BADMAC/
+.git-BACKUP-*/
+*.bak
+*.backup
+*.zip
+bot.pid
+chat-stats*.json
+group-settings.json
