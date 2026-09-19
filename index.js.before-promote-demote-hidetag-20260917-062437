@@ -1,0 +1,3302 @@
+const readline = require("readline");
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  Browsers
+} = require("@whiskeysockets/baileys");
+
+const pino = require("pino");
+const fs = require("fs");
+const QRCode = require("qrcode");
+const qrcode = require("qrcode-terminal");
+
+const BOT_NAME = "اح‍ـــمـــدبــݪاݪ نۅࢪی";
+const SESSION = "./session";
+const SETTINGS_FILE = "./group-settings.json";
+
+function loadSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
+    }
+  } catch (e) {
+    console.log("Settings Load Error:", e.message);
+  }
+  return {};
+}
+
+let groupSettings = loadSettings();
+
+function saveSettings() {
+  try {
+    fs.writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify(groupSettings, null, 2)
+    );
+  } catch (e) {
+    console.log("Settings Save Error:", e.message);
+  }
+}
+
+function getSettings(jid) {
+  if (!groupSettings[jid]) {
+    groupSettings[jid] = {
+      antilink: false,
+      welcome: true,
+      bye: true,
+      welcomeText: "خوش آمدی به گروه!",
+      byeText: "یک عضو از گروه خارج شد."
+    };
+    saveSettings();
+  }
+
+  return groupSettings[jid];
+}
+
+function getText(msg) {
+  const m = msg.message;
+  if (!m) return "";
+
+  return (
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    m.documentMessage?.caption ||
+    ""
+  ).trim();
+}
+
+function cleanJid(jid) {
+  if (!jid) return "";
+
+  return jid
+    .split(":")[0]
+    .split("@")[0]
+    .replace(/\D/g, "");
+}
+
+function sameUser(a, b) {
+  return cleanJid(a) !== "" && cleanJid(a) === cleanJid(b);
+}
+
+function isAdmin(metadata, user) {
+  if (!metadata || !user) return false;
+
+  const target = String(user);
+
+  const participant = metadata.participants?.find(p => {
+    const ids = [
+      p.id,
+      p.jid,
+      p.phoneNumber,
+      p.participant,
+      p.participantAlt,
+      p.lid,
+      p.pn
+    ].filter(Boolean);
+
+    return ids.some(id => sameUser(id, target));
+  });
+
+  return !!(
+    participant &&
+    (
+      participant.admin === "admin" ||
+      participant.admin === "superadmin" ||
+      participant.admin === "owner"
+    )
+  );
+}
+
+
+const CHAT_STATS_FILE = "./chat-stats.json";
+
+let chatStats = {};
+
+function loadChatStats() {
+  try {
+    if (fs.existsSync(CHAT_STATS_FILE)) {
+      chatStats = JSON.parse(
+        fs.readFileSync(CHAT_STATS_FILE, "utf8")
+      );
+    }
+  } catch (e) {
+    console.log("خطا در خواندن آمار:", e.message);
+    chatStats = {};
+  }
+}
+
+function saveChatStats() {
+  try {
+    fs.writeFileSync(
+      CHAT_STATS_FILE,
+      JSON.stringify(chatStats, null, 2)
+    );
+  } catch (e) {
+    console.log("خطا در ذخیره آمار:", e.message);
+  }
+}
+
+function getKabulDate(offsetDays = 0) {
+  const now = new Date();
+
+  if (offsetDays !== 0) {
+    now.setTime(
+      now.getTime() + offsetDays * 24 * 60 * 60 * 1000
+    );
+  }
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kabul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now);
+
+  const obj = {};
+
+  for (const x of parts) {
+    if (x.type !== "literal") {
+      obj[x.type] = x.value;
+    }
+  }
+
+  return (
+    obj.year +
+    "-" +
+    obj.month +
+    "-" +
+    obj.day
+  );
+}
+
+function getUserStats(jid) {
+  const id = cleanJid(jid);
+
+  if (!chatStats[id]) {
+    chatStats[id] = {
+      total: 0,
+      days: {}
+    };
+  }
+
+  if (!chatStats[id].days) {
+    chatStats[id].days = {};
+  }
+
+  return chatStats[id];
+}
+
+function addChatMessage(jid) {
+  const id = cleanJid(jid);
+
+  if (!id) return;
+
+  const stats = getUserStats(id);
+  const today = getKabulDate(0);
+
+  stats.total =
+    Number(stats.total || 0) + 1;
+
+  stats.days[today] =
+    Number(stats.days[today] || 0) + 1;
+
+  saveChatStats();
+}
+
+function getChatRank(jid) {
+  const id = cleanJid(jid);
+
+  const users = Object.entries(chatStats)
+    .map(([user, data]) => ({
+      user,
+      total: Number(data?.total || 0)
+    }))
+    .filter(x => x.total > 0)
+    .sort((a, b) => {
+      if (b.total !== a.total) {
+        return b.total - a.total;
+      }
+
+      return a.user.localeCompare(b.user);
+    });
+
+  const index =
+    users.findIndex(x => x.user === id);
+
+  return index === -1 ? "-" : index + 1;
+}
+
+function getTopChatUsers(limit = 10) {
+  return Object.entries(chatStats)
+    .map(([user, data]) => ({
+      user,
+      total: Number(data?.total || 0)
+    }))
+    .filter(x => x.total > 0)
+    .sort((a, b) => {
+      if (b.total !== a.total) {
+        return b.total - a.total;
+      }
+
+      return a.user.localeCompare(b.user);
+    })
+    .slice(0, limit);
+}
+
+function getMemberName(metadata, jid) {
+  if (metadata?.participants) {
+    const participant = metadata.participants.find(p => {
+      const ids = [
+        p.id,
+        p.jid,
+        p.phoneNumber,
+        p.participant,
+        p.participantAlt,
+        p.lid,
+        p.pn
+      ].filter(Boolean);
+
+      return ids.some(id => sameUser(id, jid));
+    });
+
+    if (participant) {
+      const name =
+        participant.notify ||
+        participant.name ||
+        participant.vname ||
+        participant.verifiedName ||
+        "";
+
+      if (String(name).trim()) {
+        return String(name).trim();
+      }
+
+      const phoneFields = [
+        participant.phoneNumber,
+        participant.pn,
+        participant.jid,
+        participant.participant,
+        participant.participantAlt
+      ].filter(Boolean);
+
+      for (const value of phoneFields) {
+        const text = String(value);
+
+        if (text.endsWith("@s.whatsapp.net")) {
+          const number = text.split("@")[0].replace(/\D/g, "");
+
+          if (number) {
+            return "+" + number;
+          }
+        }
+      }
+    }
+  }
+
+  if (String(jid).endsWith("@s.whatsapp.net")) {
+    const number = String(jid).split("@")[0].replace(/\D/g, "");
+
+    if (number) {
+      return "+" + number;
+    }
+  }
+
+  return "عضو گروپ";
+}
+
+loadChatStats();
+
+function hasLink(text) {
+  return /(https?:\/\/|www\.|chat\.whatsapp\.com\/|wa\.me\/|t\.me\/|telegram\.me\/)/i.test(text);
+}
+
+function getMentions(msg) {
+  return (
+    msg.message?.extendedTextMessage?.contextInfo?.mentionedJid ||
+    msg.message?.imageMessage?.contextInfo?.mentionedJid ||
+    msg.message?.videoMessage?.contextInfo?.mentionedJid ||
+    []
+  );
+}
+
+async function send(sock, jid, content) {
+  try {
+    await sock.sendMessage(jid, content);
+  } catch (e) {
+    console.log("Send Error:", e.message);
+  }
+}
+
+const faceSockets = new Map();
+let facePairCounter = 0;
+
+async function createFacePair(sock, requesterJid) {
+  const number = cleanJid(requesterJid);
+
+  if (!number) {
+    await send(sock, requesterJid, {
+      text: "شناسه کاربر دریافت نشد."
+    });
+    return;
+  }
+
+  fs.mkdirSync("./sessions", { recursive: true });
+
+  const pairId =
+    Date.now().toString(36) +
+    "-" +
+    (++facePairCounter) +
+    "-" +
+    Math.random().toString(36).slice(2, 10);
+
+  const sessionPath = "./sessions/pair-" + pairId;
+
+  try {
+    const { state, saveCreds } =
+      await useMultiFileAuthState(sessionPath);
+
+    const face = makeWASocket({
+      auth: state,
+      logger: pino({ level: "silent" }),
+      browser: Browsers.macOS("NIGHT LORD AHMAD BILAL"),
+      printQRInTerminal: false,
+      generateHighQualityLinkPreview: false
+    });
+
+    faceSockets.set(pairId, face);
+
+    face.ev.on("creds.update", saveCreds);
+
+    let qrSent = false;
+
+    face.ev.on("connection.update", async update => {
+      try {
+        const { connection, qr, lastDisconnect } = update;
+
+        if (qr && !qrSent) {
+          qrSent = true;
+
+          const dataUrl = await QRCode.toDataURL(qr, {
+            errorCorrectionLevel: "H",
+            margin: 2,
+            width: 900
+          });
+
+          const imageBuffer = Buffer.from(
+            dataUrl.split(",")[1],
+            "base64"
+          );
+
+          await send(sock, requesterJid, {
+            image: imageBuffer,
+            caption:
+              "QR اتصال آماده است.\n\n" +
+              "واتساپ → دستگاه‌های مرتبط → اتصال دستگاه\n" +
+              "سپس این QR را اسکن کن.\n\n" +
+              "این QR مخصوص همین درخواست است."
+          });
+
+          console.log("QR ساخته شد:", pairId);
+        }
+
+        if (connection === "open") {
+          console.log("Face وصل شد:", pairId);
+
+          await send(sock, requesterJid, {
+            text:
+              "اتصال موفق شد.\n" +
+              "این Session به‌صورت جداگانه فعال شد."
+          });
+        }
+
+        if (connection === "close") {
+          const code =
+            lastDisconnect?.error?.output?.statusCode;
+
+          console.log(
+            "Face قطع شد:",
+            pairId,
+            "کد:",
+            code
+          );
+
+          faceSockets.delete(pairId);
+
+          if (code === DisconnectReason.loggedOut) {
+            await send(sock, requesterJid, {
+              text: "این Session از واتساپ خارج شد."
+            });
+          }
+        }
+      } catch (e) {
+        console.log(
+          "Face Connection Error:",
+          pairId,
+          e.message
+        );
+      }
+    });
+
+    face.ev.on("messages.upsert", async event => {
+      try {
+        if (event.type !== "notify") return;
+
+        for (const m of event.messages || []) {
+          if (!m.message) continue;
+
+          console.log(
+            "Face message:",
+            pairId,
+            m.key.remoteJid
+          );
+        }
+      } catch (e) {
+        console.log(
+          "Face Message Error:",
+          pairId,
+          e.message
+        );
+      }
+    });
+
+    await send(sock, requesterJid, {
+      text:
+        "در حال ساخت QR اتصال...\n" +
+        "لطفاً چند لحظه صبر کن."
+    });
+
+  } catch (e) {
+    console.log(
+      "Face Pair Error:",
+      pairId,
+      e.message
+    );
+
+    faceSockets.delete(pairId);
+
+    await send(sock, requesterJid, {
+      text:
+        "خطا در ساخت این QR.\n" +
+        "دوباره .pair بفرست."
+    });
+  }
+}
+
+async function startBot() {
+  const { state, saveCreds } =
+    await useMultiFileAuthState(SESSION);
+
+  const sock = makeWASocket({
+    auth: state,
+    logger: pino({ level: "silent" }),
+    browser: Browsers.macOS("NIGHT LORD AHMAD BILAL"),
+    printQRInTerminal: false,
+    generateHighQualityLinkPreview: false
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("connection.update", async update => {
+    const { connection, qr, lastDisconnect } = update;
+
+    if (qr) { console.log("QR اصلی را اسکن کن:"); qrcode.generate(qr, { small: true }); }
+    if (connection === "connecting") {
+      console.log("در حال اتصال به واتساپ...");
+    }
+
+    if (connection === "open") {
+      console.log("");
+      console.log("================================");
+      console.log(BOT_NAME + " وصل شد!");
+      console.log("اح‍ـــمـــدبــݪاݪ فعال است");
+      console.log("================================");
+      console.log("");
+    }
+
+    if (connection === "close") {
+      const code =
+        lastDisconnect?.error?.output?.statusCode;
+
+      console.log("اتصال قطع شد. کد:", code);
+
+      if (code !== DisconnectReason.loggedOut) {
+        console.log("در حال اتصال دوباره...");
+        setTimeout(startBot, 5000);
+      } else {
+        console.log("جلسه واتساپ خارج شده است.");
+      }
+    }
+  });
+
+  let lastWelcomeMessages = new Map();
+
+  sock.ev.on("group-participants.update", async update => {
+    try {
+      const settings = getSettings(update.id);
+
+      if (update.action === "add" && settings.welcome) {
+        const groupMetadata = await sock.groupMetadata(update.id);
+        const groupName = groupMetadata?.subject || "گروپ ما";
+        const memberCount = groupMetadata?.participants?.length || 0;
+
+        for (const user of update.participants || []) {
+
+          const oldWelcome = lastWelcomeMessages.get(update.id);
+
+          if (oldWelcome) {
+            try {
+              await sock.sendMessage(update.id, {
+                delete: oldWelcome
+              });
+            } catch (e) {
+              console.log("پیام قبلی حذف نشد:", e.message);
+            }
+          }
+
+          const welcomeText =
+            "╭───❀ خوش آمدی ❀───╮\n\n" +
+            "خوش آمدی @" + cleanJid(user) + " عزیز\n\n" +
+            "به گروپ " + groupName + " خوش آمدی.\n" +
+            "امیدواریم لحظات خوبی در کنار ما داشته باشی.\n\n" +
+            "تعداد اعضای گروپ: " + memberCount + "\n\n" +
+            "لطفاً قوانین گروپ را رعایت کن.\n\n" +
+            "برای مطالب و اطلاعیه‌های بیشتر:\n" +
+            "کانال ما:\n" +
+            "https://whatsapp.com/channel/0029VbDQIGtDuMRjUa47Jl20\n\n" +
+            BOT_NAME +
+            "\n╰────────────────╯";
+
+          let sent = null;
+
+          try {
+            const imageUrl = await sock.profilePictureUrl(user, "image");
+
+            if (imageUrl) {
+              const response = await fetch(imageUrl);
+
+              if (response.ok) {
+                const imageBuffer = Buffer.from(
+                  await response.arrayBuffer()
+                );
+
+                sent = await sock.sendMessage(update.id, {
+                  image: imageBuffer,
+                  caption: welcomeText,
+                  mentions: [user]
+                });
+              }
+            }
+          } catch (e) {
+            console.log("عکس پروفایل در دسترس نیست.");
+          }
+
+          if (!sent) {
+            sent = await sock.sendMessage(update.id, {
+              text: welcomeText,
+              mentions: [user]
+            });
+          }
+
+          if (sent?.key) {
+            lastWelcomeMessages.set(update.id, sent.key);
+          }
+        }
+      }
+
+      if (update.action === "remove" && settings.bye) {
+        for (const user of update.participants || []) {
+          await send(sock, update.id, {
+            text:
+              settings.byeText +
+              "\n\nعضو: @" +
+              cleanJid(user) +
+              "\n\n" +
+              BOT_NAME,
+            mentions: [user]
+          });
+        }
+      }
+
+    } catch (e) {
+      console.log("Participant Error:", e.message);
+    }
+  });
+
+  // ===== MENU_SYSTEM_START =====
+function ahmadBilalMenu() {
+  return `╭━━━〔 👻 اح‍ـــمـــدبــݪاݪ نۅࢪی 〕━━━╮
+┃
+┃       ✦ منوی اصلی ربات ✦
+┃
+┃ ⚡━━━「 دستورات اصلی 」━━━⚡
+┃
+┃ ◈ .pair
+┃   ↳ ساخت فیس جدید
+┃ ◈ .ping
+┃   ↳ بررسی پاسخ ربات
+┃ ◈ .movie نام
+┃   ↳ معلومات فیلم
+┃ ◈ .help
+┃   ↳ راهنمای دستورات
+┃ ◈ .info
+┃   ↳ معلومات ربات
+┃ ◈ .owner
+┃   ↳ معلومات صاحب ربات
+┃
+┃ 👥━━━「 مدیریت گروپ 」━━━👥
+┃
+┃ ◈ .rules
+┃   ↳ نمایش قوانین
+┃ ◈ .groupinfo
+┃   ↳ معلومات گروپ
+┃ ◈ .admins
+┃   ↳ نمایش ادمین‌ها
+┃ ◈ .tagall
+┃   ↳ منشن همه اعضا
+┃ ◈ .hidetag
+┃   ↳ تگ بدون نمایش منشن
+┃ ◈ .tagadmin
+┃   ↳ منشن ادمین‌ها
+┃
+┃ 🛡️━━━「 محافظت 」━━━🛡️
+┃
+┃ ◈ .antilink on
+┃   ↳ فعال‌سازی ضدلینک
+┃ ◈ .antilink off
+┃   ↳ خاموش‌سازی ضدلینک
+┃ ◈ .welcome on
+┃   ↳ فعال‌سازی خوش‌آمد
+┃ ◈ .welcome off
+┃   ↳ خاموش‌سازی خوش‌آمد
+┃ ◈ .bye on
+┃   ↳ فعال‌سازی خداحافظی
+┃ ◈ .bye off
+┃   ↳ خاموش‌سازی خداحافظی
+┃ ◈ .settings
+┃   ↳ نمایش تنظیمات
+┃
+┃ 👑━━━「 مدیریت اعضا 」━━━👑
+┃
+┃ ◈ .remove
+┃   ↳ حذف عضو
+┃ ◈ .kick
+┃   ↳ اخراج عضو
+┃ ◈ .promote
+┃   ↳ ادمین‌کردن عضو
+┃ ◈ .demote
+┃   ↳ عزل ادمین
+┃ ◈ .mute
+┃   ↳ بستن ارسال پیام
+┃ ◈ .unmute
+┃   ↳ بازکردن ارسال پیام
+┃
+┃ 🔗━━━「 امکانات ویژه 」━━━🔗
+┃
+┃ ◈ .linkphoto
+┃   ↳ تنظیم عکس/لینک گروپ
+┃
+╰━━━〔 👻 اح‍ـــمـــدبــݪاݪ نۅࢪی 〕━━━╯`;
+}
+
+// ===== MENU_SYSTEM_END =====
+
+sock.ev.on("messages.upsert", async ({ messages }) => {
+    try {
+      const msg = messages?.[0];
+
+      if (!msg || !msg.message) return;
+
+
+      const jid = msg.key.remoteJid;
+
+      // ثبت آمار پیام‌های اعضای گروپ
+      if (
+        jid &&
+        jid.endsWith("@g.us") &&
+        !msg.key.fromMe
+      ) {
+        const statsUser =
+          msg.key.participant ||
+          msg.participant ||
+          msg.key.remoteJid;
+
+        if (statsUser) {
+          addChatMessage(statsUser);
+        }
+      }
+
+
+      if (!jid || jid === "status@broadcast") return;
+
+      const text = getText(msg);
+
+      if (!text) return;
+
+      const lower = text.toLowerCase().trim();
+
+      // ===== MENU_HANDLER_START =====
+      if (
+        lower === ".menu" ||
+        lower === "menu" ||
+        lower === "/menu"
+      ) {
+        await send(sock, jid, {
+          text: ahmadBilalMenu()
+        });
+        return;
+      }
+      // ===== MENU_HANDLER_END =====
+
+
+
+    // ===== TIKTOK_DOWNLOADER_SYSTEM_START =====
+if (
+  lower === ".tiktok" ||
+  lower === ".تیکتاک" ||
+  lower.startsWith(".tiktok ") ||
+  lower.startsWith(".تیکتاک ")
+) {
+  try {
+    const match = text.match(
+      /https?:\/\/[^\s<>"']*tiktok\.com[^\s<>"']*/i
+    );
+
+    let tiktokUrl = match
+      ? match[0].replace(/[)\]}>،,؛.!؟]+$/g, "")
+      : "";
+
+    if (!tiktokUrl) {
+      await send(sock, jid, {
+        text:
+          "❌ لینک TikTok پیدا نشد.\n\n" +
+          "مثال:\n" +
+          ".tiktok https://www.tiktok.com/@user/video/123456789"
+      });
+      return;
+    }
+
+    await send(sock, jid, {
+      text: "⏳ در حال دریافت ویدیوی TikTok..."
+    });
+
+    console.log("========== TIKTOK ==========");
+    console.log("TIKTOK INPUT:", tiktokUrl);
+
+    // حل لینک کوتاه
+    try {
+      const r = await fetch(tiktokUrl, {
+        redirect: "follow",
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36"
+        }
+      });
+
+      if (r.url && /tiktok\.com/i.test(r.url)) {
+        tiktokUrl = r.url.split("?")[0];
+      }
+    } catch (e) {
+      console.log("TIKTOK RESOLVE ERROR:", e.message);
+    }
+
+    // حذف پارامترهای اشتراک
+    tiktokUrl = tiktokUrl.split("?")[0];
+
+    console.log("TIKTOK FINAL URL:", tiktokUrl);
+
+    let videoUrl = "";
+    let provider = "";
+
+    // ==================================================
+    // 1. DEPAY
+    // ==================================================
+    try {
+      const api =
+        "https://depay.cloud/api/downloader/tiktok?url=" +
+        encodeURIComponent(tiktokUrl);
+
+      const r = await fetch(api, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36",
+          "Accept": "application/json,text/plain,*/*"
+        }
+      });
+
+      const raw = await r.text();
+
+      console.log("TIKTOK DEPAY STATUS:", r.status);
+      console.log("TIKTOK DEPAY:", raw.slice(0, 3000));
+
+      if (r.ok) {
+        try {
+          const data = JSON.parse(raw);
+
+          const findUrl = obj => {
+            if (!obj || typeof obj !== "object") return "";
+
+            const keys = [
+              "download_url",
+              "downloadUrl",
+              "video_url",
+              "videoUrl",
+              "no_watermark",
+              "noWatermark",
+              "url",
+              "play"
+            ];
+
+            for (const key of keys) {
+              if (
+                typeof obj[key] === "string" &&
+                /^https?:\/\//i.test(obj[key])
+              ) {
+                return obj[key];
+              }
+            }
+
+            for (const value of Object.values(obj)) {
+              if (value && typeof value === "object") {
+                const found = findUrl(value);
+                if (found) return found;
+              }
+            }
+
+            return "";
+          };
+
+          videoUrl = findUrl(data);
+        } catch {}
+      }
+
+      if (videoUrl) provider = "DEPAY";
+
+    } catch (e) {
+      console.log("TIKTOK DEPAY ERROR:", e.message);
+    }
+
+    // ==================================================
+    // 2. SLBJS
+    // ==================================================
+    if (!videoUrl) {
+      try {
+        const api =
+          "https://tdownv4.sl-bjs.workers.dev/?down=" +
+          encodeURIComponent(tiktokUrl);
+
+        const r = await fetch(api, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36",
+            "Accept": "application/json,text/plain,*/*"
+          }
+        });
+
+        const raw = await r.text();
+
+        console.log("TIKTOK SLBJS STATUS:", r.status);
+        console.log("TIKTOK SLBJS:", raw.slice(0, 3000));
+
+        if (r.ok) {
+          try {
+            const data = JSON.parse(raw);
+
+            videoUrl =
+              data?.download_url ||
+              data?.data?.download_url ||
+              data?.video_url ||
+              data?.data?.video_url ||
+              data?.play ||
+              data?.data?.play ||
+              data?.hdplay ||
+              data?.data?.hdplay ||
+              "";
+          } catch {}
+        }
+
+        if (videoUrl) provider = "SLBJS";
+
+      } catch (e) {
+        console.log("TIKTOK SLBJS ERROR:", e.message);
+      }
+    }
+
+    // ==================================================
+    // 3. GODOWNLOADER
+    // ==================================================
+    if (!videoUrl) {
+      try {
+        const api =
+          "https://godownloader.com/api/tiktok-no-watermark-free?url=" +
+          encodeURIComponent(tiktokUrl) +
+          "&key=godownloader.com";
+
+        const r = await fetch(api, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36",
+            "Accept": "application/json,text/plain,*/*"
+          }
+        });
+
+        const raw = await r.text();
+
+        console.log(
+          "TIKTOK GODOWNLOADER STATUS:",
+          r.status
+        );
+
+        console.log(
+          "TIKTOK GODOWNLOADER:",
+          raw.slice(0, 3000)
+        );
+
+        if (r.ok) {
+          try {
+            const data = JSON.parse(raw);
+
+            videoUrl =
+              data?.video_url ||
+              data?.download_url ||
+              data?.data?.video_url ||
+              data?.data?.download_url ||
+              data?.url ||
+              "";
+          } catch {}
+        }
+
+        if (videoUrl) provider = "GODOWNLOADER";
+
+      } catch (e) {
+        console.log(
+          "TIKTOK GODOWNLOADER ERROR:",
+          e.message
+        );
+      }
+    }
+
+    if (
+      !videoUrl ||
+      !/^https?:\/\//i.test(videoUrl)
+    ) {
+      throw new Error(
+        "هیچ سرویس دانلودی لینک مستقیم ویدیو نداد"
+      );
+    }
+
+    console.log("TIKTOK PROVIDER:", provider);
+    console.log(
+      "TIKTOK VIDEO URL:",
+      videoUrl.slice(0, 1000)
+    );
+
+    await sock.sendMessage(jid, {
+      video: {
+        url: videoUrl
+      },
+      mimetype: "video/mp4",
+      fileName: "TikTok.mp4",
+      caption: "🎬 TikTok\nبدون واترمارک"
+    });
+
+    console.log("TIKTOK SEND: OK");
+
+  } catch (e) {
+    console.log(
+      "TIKTOK FINAL ERROR:",
+      e.stack || e.message
+    );
+
+    await send(sock, jid, {
+      text:
+        "❌ دانلود TikTok انجام نشد.\n" +
+        "سرویس دانلود برای این ویدیو پاسخ قابل استفاده نداد."
+    });
+  }
+
+  return;
+}
+// ===== TIKTOK_DOWNLOADER_SYSTEM_END =====
+
+
+      const isGroup = jid.endsWith("@g.us");
+
+      let metadata = null;
+
+      if (isGroup) {
+        try {
+          metadata = await sock.groupMetadata(jid);
+        } catch (e) {
+          console.log("Metadata Error:", e.message);
+        }
+      }
+
+      const sender =
+        msg.key.participant ||
+        msg.participant ||
+        msg.key.remoteJid;
+
+      const botId = sock.user?.id || "";
+
+      const senderIsAdmin =
+        isGroup && isAdmin(metadata, sender);
+
+      const botIsAdmin =
+        isGroup && isAdmin(metadata, botId);
+
+      const settings =
+        isGroup ? getSettings(jid) : null;
+
+
+        // ===== RAGBAR_SYSTEM_START =====
+        // رگبار: ۶ پیام قبلی حذف، پیام هفتم باقی می‌ماند و اخطار می‌دهد
+
+        if (
+          isGroup &&
+          !msg.key.fromMe &&
+          !senderIsAdmin
+        ) {
+          const messageIsVoice =
+            !!msg.message?.audioMessage?.ptt ||
+            !!msg.message?.audioMessage ||
+            !!msg.message?.voiceMessage;
+
+          if (!messageIsVoice) {
+            if (!globalThis.__ragbar) {
+              globalThis.__ragbar = {};
+            }
+
+            const ragbarKey =
+              jid + ":" + cleanJid(sender);
+
+            const ragbarText =
+              String(lower)
+                .replace(/\\u200c/g, "")
+                .replace(/\s+/g, " ")
+                .trim();
+
+            if (ragbarText) {
+              let data =
+                globalThis.__ragbar[ragbarKey];
+
+              if (
+                !data ||
+                data.text !== ragbarText
+              ) {
+                data = {
+                  text: ragbarText,
+                  count: 0,
+                  messages: []
+                };
+
+                globalThis.__ragbar[ragbarKey] = data;
+              }
+
+              data.count += 1;
+              data.messages.push(msg.key);
+
+              console.log(
+                "RAGBAR:",
+                cleanJid(sender),
+                data.count,
+                "/ 7"
+              );
+
+              // پیام‌های ۱ تا ۶ فعلاً حذف نمی‌شوند
+              if (data.count < 7) {
+                // پیام‌های ۱ تا ۶ باقی می‌مانند و پردازش ادامه پیدا می‌کند.
+              }
+
+              // پیام هفتم
+              if (data.count === 7) {
+
+                // فقط ۶ پیام قبلی حذف شوند
+                const oldMessages =
+                  data.messages.slice(0, 6);
+
+                for (const oldKey of oldMessages) {
+                  try {
+                    await sock.sendMessage(jid, {
+                      delete: oldKey
+                    });
+
+                    console.log(
+                      "RAGBAR OLD MESSAGE DELETED"
+                    );
+                  } catch (e) {
+                    console.log(
+                      "RAGBAR OLD DELETE ERROR:",
+                      e.message
+                    );
+                  }
+                }
+
+                if (!globalThis.__warnings) {
+                  globalThis.__warnings = {};
+                }
+
+                const warningKey =
+                  jid + ":" + cleanJid(sender);
+
+                globalThis.__warnings[warningKey] =
+                  Number(
+                    globalThis.__warnings[warningKey] || 0
+                  ) + 1;
+
+                const warningCount =
+                  globalThis.__warnings[warningKey];
+
+                try {
+                  await sock.sendMessage(jid, {
+                    text:
+                      "╭━━━〔 ⚠️ اخطار رگبار 〕━━━╮\n" +
+                      "┃ 👤 @" + cleanJid(sender) + "\n" +
+                      "┃ 🌧️ یک پیام را ۷ بار تکرار کردی\n" +
+                      "┃ 🗑️ ۶ پیام قبلی حذف شد\n" +
+                      "┃ 🔥 اخطار: " + warningCount + " / 7\n" +
+                      "╰━━━━━━━━━━━━━━━━━━━━╯",
+                    mentions: [sender]
+                  });
+
+                  console.log(
+                    "RAGBAR WARNING:",
+                    warningCount
+                  );
+                } catch (e) {
+                  console.log(
+                    "RAGBAR WARNING ERROR:",
+                    e.message
+                  );
+                }
+
+                // پیام هفتم باقی می‌ماند
+                // عضو در اینجا حذف نمی‌شود
+                delete globalThis.__ragbar[ragbarKey];
+
+                return;
+              }
+            }
+          }
+        }
+        // ===== RAGBAR_SYSTEM_END =====
+
+        // ===== GAME_CENTER_SYSTEM_START =====
+        // 🎮 اح‍ـــمـــدبــݪاݪ | بازی‌های گروهی به زبان دری
+
+        if (isGroup && !msg.key.fromMe) {
+          if (!globalThis.__ahmadGames) {
+            globalThis.__ahmadGames = {};
+          }
+
+          const gameUser = cleanJid(sender);
+
+          if (!gameUser) return;
+
+          if (!globalThis.__ahmadGames[gameUser]) {
+            globalThis.__ahmadGames[gameUser] = {
+              پول: 1000,
+              امتیاز: 0,
+              بازی: 0
+            };
+          }
+
+          const player = globalThis.__ahmadGames[gameUser];
+
+          const sendGame = async (text, extra = {}) => {
+            try {
+              await sock.sendMessage(jid, {
+                text,
+                ...extra
+              });
+            } catch (e) {
+              console.log("GAME ERROR:", e.message);
+            }
+          };
+
+          // فهرست بازی‌ها
+          if (
+            lower === ".بازی" ||
+            lower === "بازی" ||
+            lower === ".گیم"
+          ) {
+            return await sendGame(
+              "╭━━━〔 🎮 اح‍ـــمـــدبــݪاݪ 〕━━━╮\n" +
+              "┃ 🎯 .حدس       حدس عدد\n" +
+              "┃ 🧠 .معلومات   سوال معلومات عمومی\n" +
+              "┃ ⚡ .سرعت      بازی سرعت\n" +
+              "┃ 🧩 .معما      معمای دری\n" +
+              "┃ ✊ .سنگ       سنگ، کاغذ، قیچی\n" +
+              "┃ 🎲 .تاس       پرتاب تاس\n" +
+              "┃ 🪙 .سکه       شیر یا خط\n" +
+              "┃ 🎰 .شانس      بازی شانس\n" +
+              "┃ 🃏 .کارت      کارت تصادفی\n" +
+              "┃ 💣 .مین       بازی مین\n" +
+              "┃ 🕵️ .مافیا     شروع مافیا\n" +
+              "┃ 💰 .پول       پول شما\n" +
+              "┃ 💼 .کار       کار و درآمد\n" +
+              "┃ 🏆 .قهرمانان  جدول امتیاز\n" +
+              "╰━━━━━━━━━━━━━━━━━━╯"
+            );
+          }
+
+          // پول
+          if (
+            lower === ".پول" ||
+            lower === ".موجودی"
+          ) {
+            return await sendGame(
+              "╭━━〔 💰 حساب اح‍ـــمـــدبــݪاݪ 〕━━╮\n" +
+              "┃ 👤 @" + gameUser + "\n" +
+              "┃ 💵 پول: " + player.پول + "\n" +
+              "┃ 🏆 امتیاز: " + player.امتیاز + "\n" +
+              "╰━━━━━━━━━━━━━━━━╯",
+              { mentions: [sender] }
+            );
+          }
+
+          // کار
+          if (lower === ".کار") {
+            const jobs = [
+              "در دکان کار کردی",
+              "در بازار کار کردی",
+              "یک کار ساختمانی انجام دادی",
+              "برای یک مشتری کار کردی",
+              "در خانه به یک نفر کمک کردی"
+            ];
+
+            const earned =
+              100 + Math.floor(Math.random() * 401);
+
+            const job =
+              jobs[Math.floor(Math.random() * jobs.length)];
+
+            player.پول += earned;
+            player.امتیاز += 1;
+            player.بازی += 1;
+
+            return await sendGame(
+              "💼 " + job + "\n\n" +
+              "💵 درآمد: +" + earned + "\n" +
+              "💰 پول فعلی: " + player.پول + "\n" +
+              "🏆 امتیاز: +" + 1
+            );
+          }
+
+          // حدس عدد
+          if (lower.startsWith(".حدس")) {
+            const arg = lower.replace(".حدس", "").trim();
+
+            if (!arg) {
+              const n =
+                1 + Math.floor(Math.random() * 10);
+
+              globalThis.__ahmadGames[gameUser].guess = n;
+
+              return await sendGame(
+                "🎯 یک عدد بین ۱ تا ۱۰ در ذهن من است.\n" +
+                "حدس خود را بفرست؛ مثال:\n" +
+                ".حدس ۷"
+              );
+            }
+
+            const guess = Number(arg);
+            const target =
+              globalThis.__ahmadGames[gameUser].guess;
+
+            if (!target || !Number.isInteger(guess)) {
+              return await sendGame(
+                "❌ نخست `.حدس` را بزن، سپس عدد خود را بفرست."
+              );
+            }
+
+            if (guess === target) {
+              player.پول += 300;
+              player.امتیاز += 5;
+              delete player.guess;
+
+              return await sendGame(
+                "🎉 درست حدس زدی!\n" +
+                "💵 جایزه: +300\n" +
+                "🏆 امتیاز: +5"
+              );
+            }
+
+            if (guess < target) {
+              return await sendGame("⬆️ عدد بزرگ‌تر است.");
+            }
+
+            return await sendGame("⬇️ عدد کوچک‌تر است.");
+          }
+
+          // تاس
+          if (lower === ".تاس") {
+            const n =
+              1 + Math.floor(Math.random() * 6);
+
+            player.بازی += 1;
+            player.امتیاز += n;
+
+            return await sendGame(
+              "🎲 تاس انداخته شد: **" + n + "**\n" +
+              "🏆 امتیاز: +" + n
+            );
+          }
+
+          // سکه
+          if (lower === ".سکه") {
+            const result =
+              Math.random() < 0.5 ? "شیر" : "خط";
+
+            player.بازی += 1;
+            player.امتیاز += 2;
+
+            return await sendGame(
+              "🪙 نتیجه سکه: **" + result + "**\n" +
+              "🏆 امتیاز: +2"
+            );
+          }
+
+          // سنگ کاغذ قیچی
+          if (
+            lower === ".سنگ" ||
+            lower === ".کاغذ" ||
+            lower === ".قیچی"
+          ) {
+            const choices = [
+              ".سنگ",
+              ".کاغذ",
+              ".قیچی"
+            ];
+
+            const bot =
+              choices[Math.floor(Math.random() * 3)];
+
+            const user = lower;
+
+            let result = "مساوی شد.";
+            let reward = 1;
+
+            if (
+              (user === ".سنگ" && bot === ".قیچی") ||
+              (user === ".کاغذ" && bot === ".سنگ") ||
+              (user === ".قیچی" && bot === ".کاغذ")
+            ) {
+              result = "🎉 تو بردی!";
+              reward = 5;
+              player.پول += 100;
+            } else if (user !== bot) {
+              result = "😄 این بار من بردم.";
+            }
+
+            player.امتیاز += reward;
+            player.بازی += 1;
+
+            const names = {
+              ".سنگ": "سنگ",
+              ".کاغذ": "کاغذ",
+              ".قیچی": "قیچی"
+            };
+
+            return await sendGame(
+              "✊ انتخاب تو: " + names[user] + "\n" +
+              "👻 انتخاب من: " + names[bot] + "\n\n" +
+              result + "\n" +
+              "🏆 امتیاز: +" + reward
+            );
+          }
+
+          // شانس
+          if (
+            lower === ".شانس" ||
+            lower === ".اسلات"
+          ) {
+            const icons = ["🍎", "🍋", "⭐", "💎", "7️⃣"];
+
+            const a =
+              icons[Math.floor(Math.random() * icons.length)];
+            const b =
+              icons[Math.floor(Math.random() * icons.length)];
+            const c =
+              icons[Math.floor(Math.random() * icons.length)];
+
+            let reward = 0;
+
+            if (a === b && b === c) {
+              reward = 500;
+            } else if (a === b || b === c || a === c) {
+              reward = 100;
+            }
+
+            player.پول += reward;
+            player.بازی += 1;
+
+            return await sendGame(
+              "🎰 " + a + " | " + b + " | " + c + "\n\n" +
+              (reward
+                ? "🎉 برنده شدی!\n💵 جایزه: +" + reward
+                : "😅 این بار چیزی نبردی.")
+            );
+          }
+
+          // کارت
+          if (lower === ".کارت") {
+            const suits = ["دل", "خشت", "پیک", "گشنیز"];
+            const values = [
+              "آس", "۲", "۳", "۴", "۵",
+              "۶", "۷", "۸", "۹", "۱۰",
+              "سرباز", "بی‌بی", "شاه"
+            ];
+
+            const suit =
+              suits[Math.floor(Math.random() * suits.length)];
+
+            const value =
+              values[Math.floor(Math.random() * values.length)];
+
+            player.امتیاز += 2;
+
+            return await sendGame(
+              "🃏 کارت تو:\n" +
+              "「" + value + " " + suit + "」\n\n" +
+              "🏆 امتیاز: +2"
+            );
+          }
+
+          // معلومات عمومی
+          if (
+            lower === ".معلومات" ||
+            lower === ".سوال"
+          ) {
+            const questions = [
+              {
+                q: "پایتخت افغانستان چیست؟",
+                a: "کابل"
+              },
+              {
+                q: "بزرگ‌ترین سیاره منظومه شمسی کدام است؟",
+                a: "مشتری"
+              },
+              {
+                q: "آب در چند درجه سانتی‌گراد یخ می‌زند؟",
+                a: "۰"
+              },
+              {
+                q: "چند روز در یک هفته وجود دارد؟",
+                a: "۷"
+              }
+            ];
+
+            const item =
+              questions[
+                Math.floor(Math.random() * questions.length)
+              ];
+
+            player.quiz = item.a;
+
+            return await sendGame(
+              "🧠 سوال:\n" +
+              item.q + "\n\n" +
+              "برای پاسخ بنویس:\n" +
+              ".جواب پاسخ"
+            );
+          }
+
+          // پاسخ سوال
+          if (lower.startsWith(".جواب")) {
+            const answer =
+              lower.replace(".جواب", "").trim();
+
+            if (!player.quiz) {
+              return await sendGame(
+                "❌ فعلاً سوالی فعال نیست."
+              );
+            }
+
+            if (answer === player.quiz.toLowerCase()) {
+              player.پول += 200;
+              player.امتیاز += 5;
+              delete player.quiz;
+
+              return await sendGame(
+                "🎉 پاسخ درست بود!\n" +
+                "💵 جایزه: +200\n" +
+                "🏆 امتیاز: +5"
+              );
+            }
+
+            return await sendGame(
+              "❌ پاسخ نادرست است."
+            );
+          }
+
+          // معما
+          if (lower === ".معما") {
+            const riddles = [
+              {
+                q: "آن چیست که دندان دارد ولی غذا نمی‌خورد؟",
+                a: "شانه"
+              },
+              {
+                q: "آن چیست که هرچه بیشتر از آن برداری، بزرگ‌تر می‌شود؟",
+                a: "چاله"
+              },
+              {
+                q: "آن چیست که پا دارد ولی راه نمی‌رود؟",
+                a: "میز"
+              }
+            ];
+
+            const item =
+              riddles[
+                Math.floor(Math.random() * riddles.length)
+              ];
+
+            player.riddle = item.a;
+
+            return await sendGame(
+              "🧩 معما:\n" +
+              item.q + "\n\n" +
+              "پاسخ:\n" +
+              ".جواب پاسخ"
+            );
+          }
+
+          // قهرمانان
+          if (
+            lower === ".قهرمانان" ||
+            lower === ".رتبه"
+          ) {
+            const list =
+              Object.entries(globalThis.__ahmadGames)
+                .sort(
+                  (a, b) =>
+                    Number(b[1].امتیاز || 0) -
+                    Number(a[1].امتیاز || 0)
+                )
+                .slice(0, 10);
+
+            let text =
+              "╭━━━〔 🏆 قهرمانان اح‍ـــمـــدبــݪاݪ 〕━━━╮\n";
+
+            list.forEach((item, index) => {
+              text +=
+                "┃ " +
+                (index + 1) +
+                ". @" +
+                item[0] +
+                " — " +
+                (item[1].امتیاز || 0) +
+                " امتیاز\n";
+            });
+
+            text +=
+              "╰━━━━━━━━━━━━━━━━━━━━╯";
+
+            return await sendGame(text, {
+              mentions: list.map(item => item[0] + "@s.whatsapp.net")
+            });
+          }
+
+          // سرعت
+          if (lower === ".سرعت") {
+            const words = [
+              "احمد",
+              "کابل",
+              "افغانستان",
+              "دوستی",
+              "اح‍ـــمـــدبــݪاݪ"
+            ];
+
+            const word =
+              words[Math.floor(Math.random() * words.length)];
+
+            player.speed = word.toLowerCase();
+
+            return await sendGame(
+              "⚡ اولین کسی که این کلمه را بفرستد برنده است:\n\n" +
+              "👉 " + word
+            );
+          }
+
+          // مین
+          if (lower.startsWith(".مین")) {
+            const cells = 9;
+            const mine =
+              Math.floor(Math.random() * cells) + 1;
+
+            const arg =
+              lower.replace(".مین", "").trim();
+
+            if (!arg) {
+              return await sendGame(
+                "💣 یک خانه از ۱ تا ۹ را انتخاب کن.\n" +
+                "مثال: `.مین ۵`"
+              );
+            }
+
+            const pick = Number(arg);
+
+            if (
+              !Number.isInteger(pick) ||
+              pick < 1 ||
+              pick > 9
+            ) {
+              return await sendGame(
+                "❌ خانه باید بین ۱ تا ۹ باشد."
+              );
+            }
+
+            player.بازی += 1;
+
+            if (pick === mine) {
+              player.پول = Math.max(
+                0,
+                player.پول - 100
+              );
+
+              return await sendGame(
+                "💥 مین منفجر شد!\n" +
+                "💸 ۱۰۰ پول از دست دادی."
+              );
+            }
+
+            player.پول += 150;
+            player.امتیاز += 3;
+
+            return await sendGame(
+              "🛡️ خانه امن بود!\n" +
+              "💵 جایزه: +150\n" +
+              "🏆 امتیاز: +3"
+            );
+          }
+
+          // مافیا
+          if (lower === ".مافیا") {
+            const roles = [
+              "مافیا",
+              "پولیس",
+              "دکتر",
+              "شهروند"
+            ];
+
+            const role =
+              roles[Math.floor(Math.random() * roles.length)];
+
+            return await sendGame(
+              "🕵️ بازی مافیا آغاز شد!\n\n" +
+              "نقش خصوصی تو:\n" +
+              "🔐 " + role + "\n\n" +
+              "برای اجرای بازی گروهی، اعضا باید `.مافیا` را بزنند."
+            );
+          }
+        }
+
+        // ===== GAME_CENTER_SYSTEM_END =====
+
+        // ===== BADWORD_SYSTEM_START =====
+        if (isGroup && !msg.key.fromMe && !senderIsAdmin) {
+          const badWords = [
+            "کونی",
+            "کون",
+            "کوس",
+            "کوسی",
+            "کیر",
+            "کیر",
+            "فایشه",
+            "حرامی",
+            "خایه"
+          ];
+
+          const cleanText = String(lower)
+            .replace(/ي/g, "ی")
+            .replace(/ى/g, "ی")
+            .replace(/ك/g, "ک")
+            .replace(/\u200c/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          const badWord = badWords.find(word =>
+            cleanText.includes(word)
+          );
+
+          if (badWord) {
+            console.log(
+              "BADWORD DETECTED:",
+              badWord,
+              "FROM:",
+              sender
+            );
+
+            try {
+              await sock.sendMessage(jid, {
+                delete: msg.key
+              });
+              console.log("BADWORD MESSAGE DELETED");
+            } catch (e) {
+              console.log(
+                "BADWORD DELETE ERROR:",
+                e.message
+              );
+            }
+
+            if (!globalThis.__warnings) {
+              globalThis.__warnings = {};
+            }
+
+            const warningKey =
+              jid + ":" + cleanJid(sender);
+
+            globalThis.__warnings[warningKey] =
+              Number(globalThis.__warnings[warningKey] || 0) + 1;
+
+            const warningCount =
+              globalThis.__warnings[warningKey];
+
+            try {
+              await sock.sendMessage(jid, {
+                text:
+                  "╭━━━〔 ⚠️ اخطار 〕━━━╮\n" +
+                  "┃ 👤 @" + cleanJid(sender) + "\n" +
+                  "┃ 🚫 فحش و الفاظ نامناسب ممنوع است\n" +
+                  "┃ 🔥 اخطار: " +
+                  warningCount +
+                  " / 7\n" +
+                  "╰━━━━━━━━━━━━━━━━━━╯",
+                mentions: [sender]
+              });
+
+              console.log(
+                "WARNING SENT:",
+                warningCount
+              );
+            } catch (e) {
+              console.log(
+                "WARNING SEND ERROR:",
+                e.message
+              );
+            }
+
+            if (warningCount >= 7 && botIsAdmin) {
+              try {
+                await sock.groupParticipantsUpdate(
+                  jid,
+                  [sender],
+                  "remove"
+                );
+
+                console.log(
+                  "USER REMOVED AFTER 7 WARNINGS"
+                );
+
+                delete globalThis.__warnings[warningKey];
+              } catch (e) {
+                console.log(
+                  "AUTO REMOVE ERROR:",
+                  e.message
+                );
+              }
+            }
+
+            return;
+          }
+        }
+        // ===== BADWORD_SYSTEM_END =====
+
+
+      if (
+        lower === "امار چت" ||
+        lower === "آمار چت"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text:
+              "این دستور فقط در گروپ قابل استفاده است."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "این دستور فقط برای مدیران گروپ است."
+          });
+          return;
+        }
+
+        const top =
+          getTopChatUsers(10);
+
+        const memberCount =
+          metadata?.participants?.length || 0;
+
+        const now = new Date();
+
+          const solarParts = new Intl.DateTimeFormat("en-US-u-ca-persian", { timeZone: "Asia/Kabul", year: "numeric", month: "numeric", day: "numeric" }).formatToParts(new Date());
+
+          const solarYear = solarParts.find(p => p.type === "year")?.value || "";
+          const solarMonth = Number(solarParts.find(p => p.type === "month")?.value || 0);
+          const solarDay = solarParts.find(p => p.type === "day")?.value || "";
+
+          const solarMonths = ["", "حمل", "ثور", "جوزا", "سرطان", "اسد", "سنبله", "میزان", "عقرب", "قوس", "جدی", "دلو", "حوت"];
+
+          const dateText = solarDay + " " + (solarMonths[solarMonth] || "") + " " + solarYear;
+
+          const timeParts = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Kabul",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23"
+}).formatToParts(new Date());
+
+const hh = timeParts.find(p => p.type === "hour")?.value || "00";
+const mm = timeParts.find(p => p.type === "minute")?.value || "00";
+const ss = timeParts.find(p => p.type === "second")?.value || "00";
+
+const toFaDigits = value =>
+  String(value).replace(/[0-9]/g, d => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]);
+
+const timeText =
+  toFaDigits(hh) + ":" +
+  toFaDigits(mm) + ":" +
+  toFaDigits(ss);
+
+        const medals = [
+          "🥇",
+          "🥈",
+          "🥉",
+          "➃",
+          "➄",
+          "➅",
+          "➆",
+          "➇",
+          "➈",
+          "➉"
+        ];
+
+        const groupName =
+          metadata?.subject || "گروپ ما";
+
+        let result =
+          "╭━━━〔 آمار فعالیت گروپ 〕━━━╮\n" +
+          "┃  " + groupName + "\n" +
+          "┃  👥 تعداد اعضا : " + memberCount + "\n" +
+          "┃  📅 " + dateText + "\n" +
+          "┃  🕐 " + timeText + " | کابل افغانستان\n" +
+          "╰━━━━━━━━━━━━━━━━━━━━╯\n\n" +
+          "🏆 نفرات فعال گروپ\n" +
+          "━━━━━━━━━━━━━━━━━━\n";
+
+        if (top.length === 0) {
+
+          result +=
+            "هنوز آماری از اعضای گروپ ثبت نشده است.";
+
+        } else {
+
+          for (let i = 0; i < top.length; i++) {
+
+            const user = top[i];
+
+            const name =
+              getMemberName(
+                metadata,
+                user.user
+              );
+
+            result +=
+              "• رتـبه" +
+              medals[i] +
+              " : " +
+              name +
+              " | " +
+              user.total +
+              " بار\n";
+          }
+        }
+
+        await send(sock, jid, {
+          text: result
+        });
+
+        return;
+      }
+
+
+      
+      if (
+        lower === "آیدی" ||
+        lower === "ایدی"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط داخل گروپ کار می‌کند."
+          });
+          return;
+        }
+
+        const context =
+          msg.message?.extendedTextMessage?.contextInfo ||
+          msg.message?.imageMessage?.contextInfo ||
+          msg.message?.videoMessage?.contextInfo ||
+          msg.message?.documentMessage?.contextInfo ||
+          msg.message?.audioMessage?.contextInfo ||
+          msg.message?.stickerMessage?.contextInfo ||
+          {};
+
+        const mentions = getMentions(msg);
+
+        const replyIds = [
+          context.participant,
+          context.participantAlt,
+          context.participantPn,
+          context.senderPn,
+          context.senderLid
+        ].filter(Boolean);
+
+        const targetIds = [
+          ...mentions,
+          ...replyIds
+        ];
+
+        let target = sender;
+
+        if (targetIds.length > 0) {
+          const otherTarget = targetIds.find(x => {
+            return cleanJid(x) !== cleanJid(sender);
+          });
+
+          if (otherTarget) {
+            if (!senderIsAdmin) {
+              await send(sock, jid, {
+                text:
+                  "فقط ادمین گروپ می‌تواند آمار شخص دیگری را ببیند."
+              });
+              return;
+            }
+
+            target = otherTarget;
+          }
+        }
+
+        const candidates = [];
+
+        const addCandidate = value => {
+          if (!value) return;
+
+          const str = String(value);
+
+          if (
+            !candidates.some(
+              x => cleanJid(x) === cleanJid(str)
+            )
+          ) {
+            candidates.push(str);
+          }
+        };
+
+        addCandidate(target);
+
+        const participant =
+          metadata?.participants?.find(p => {
+            const ids = [
+              p.id,
+              p.jid,
+              p.phoneNumber,
+              p.participant,
+              p.participantAlt,
+              p.lid,
+              p.pn
+            ].filter(Boolean);
+
+            return ids.some(
+              id =>
+                cleanJid(id) === cleanJid(target)
+            );
+          });
+
+        if (participant) {
+          addCandidate(participant.id);
+          addCandidate(participant.jid);
+          addCandidate(participant.phoneNumber);
+          addCandidate(participant.participant);
+          addCandidate(participant.participantAlt);
+          addCandidate(participant.lid);
+          addCandidate(participant.pn);
+        }
+
+        for (const id of replyIds) {
+          addCandidate(id);
+        }
+
+        let realTarget = null;
+        let bestStats = null;
+        let bestTotal = -1;
+
+        for (const candidate of candidates) {
+          const candidateStats =
+            getUserStats(candidate);
+
+          const total =
+            Number(candidateStats?.total || 0);
+
+          if (total > bestTotal) {
+            bestTotal = total;
+            realTarget = candidate;
+            bestStats = candidateStats;
+          }
+        }
+
+        if (!realTarget) {
+          realTarget = target;
+          bestStats = getUserStats(realTarget);
+        }
+
+        const stats =
+          bestStats || getUserStats(realTarget);
+
+        const today =
+          getKabulDate(0);
+
+        const yesterday =
+          getKabulDate(-1);
+
+        const todayCount =
+          Number(stats.days?.[today] || 0);
+
+        const yesterdayCount =
+          Number(stats.days?.[yesterday] || 0);
+
+        const totalCount =
+          Number(stats.total || 0);
+
+        const rank =
+          getChatRank(realTarget);
+
+        let name =
+          getMemberName(metadata, realTarget);
+
+        if (
+          cleanJid(realTarget) ===
+          cleanJid(sender)
+        ) {
+          name =
+            msg.pushName ||
+            name;
+        }
+
+        const profileText =
+          "╭━━━〔 پروفایل فعالیت 〕━━━╮\n" +
+          "┃ 👤 نام : " + name + "\n" +
+          "┣━━━━━━━━━━━━━━━━━━\n" +
+          "┃ 📅 امروز : " + todayCount + " پیام\n" +
+          "┃ 🕐 دیروز : " + yesterdayCount + " پیام\n" +
+          "┃ 💬 مجموع : " + totalCount + " پیام\n" +
+          "┃ 🏆 قهرمانان : " + rank + "\n" +
+          "╰━━━━━━━━━━━━━━━━━━╯";
+
+        let photoSent = false;
+
+        /*
+         * اول عکس پروفایل شخص را امتحان می‌کنیم.
+         */
+        const photoTargets = [
+          realTarget,
+          target,
+          sender
+        ].filter(Boolean);
+
+        for (const photoTarget of photoTargets) {
+          if (photoSent) break;
+
+          try {
+            const imageUrl =
+              await sock.profilePictureUrl(
+                photoTarget,
+                "image"
+              );
+
+            if (!imageUrl) continue;
+
+            const response =
+              await fetch(imageUrl);
+
+            if (!response.ok) continue;
+
+            const imageBuffer =
+              Buffer.from(
+                await response.arrayBuffer()
+              );
+
+            await sock.sendMessage(jid, {
+              image: imageBuffer,
+              caption: profileText
+            });
+
+            photoSent = true;
+          } catch (e) {
+            console.log(
+              "Profile Photo Error:",
+              e.message
+            );
+          }
+        }
+
+        /*
+         * اگر عکس پیدا نشد، یک تصویر ساده با نام
+         * The King Of Hack Belal می‌سازیم.
+         */
+        if (!photoSent) {
+          try {
+            const { createCanvas } =
+              require("canvas");
+
+            const canvas =
+              createCanvas(1000, 1000);
+
+            const ctx =
+              canvas.getContext("2d");
+
+            ctx.fillStyle = "#111111";
+            ctx.fillRect(
+              0,
+              0,
+              1000,
+              1000
+            );
+
+            ctx.fillStyle = "#ffffff";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+
+            ctx.font =
+              "bold 70px sans-serif";
+
+            ctx.fillText(
+              "The King Of",
+              500,
+              430
+            );
+
+            ctx.fillText(
+              "Hack Belal",
+              500,
+              530
+            );
+
+            const imageBuffer =
+              canvas.toBuffer("image/png");
+
+            await sock.sendMessage(jid, {
+              image: imageBuffer,
+              caption: profileText
+            });
+
+            photoSent = true;
+
+          } catch (e) {
+            console.log(
+              "Fallback Image Error:",
+              e.message
+            );
+
+            await send(sock, jid, {
+              text: profileText
+            });
+          }
+        }
+
+        return;
+      }
+
+
+      if (
+        isGroup &&
+        settings.antilink &&
+        !msg.key.fromMe &&
+        hasLink(text)
+      ) {
+        if (!senderIsAdmin) {
+          try {
+            await sock.sendMessage(jid, {
+              delete: msg.key
+            });
+          } catch (e) {
+            console.log("Delete Link Error:", e.message);
+          }
+
+          if (botIsAdmin) {
+            try {
+              await sock.groupParticipantsUpdate(
+                jid,
+                [sender],
+                "remove"
+              );
+
+              await send(sock, jid, {
+                text:
+                  "لینک ممنوع است.\nپیام حذف شد و فرستنده از گروه حذف گردید."
+              });
+            } catch (e) {
+              await send(sock, jid, {
+                text:
+                  "لینک حذف شد، اما حذف فرستنده انجام نشد."
+              });
+            }
+          } else {
+            await send(sock, jid, {
+              text:
+                "لینک حذف شد.\nبرای حذف فرستنده، اح‍ـــمـــدبــݪاݪ باید مدیر گروه باشد."
+            });
+          }
+
+          return;
+        }
+      }
+
+      // واکنش به پیام ادمین قبل از اجرای هر دستور
+      if (
+        isAdmin(metadata, sender) &&
+        (
+          lower.startsWith(".") ||
+          lower.startsWith("/") ||
+          lower === "pair"
+        )
+      ) {
+        try {
+          await sock.sendMessage(jid, {
+            react: {
+              text: "👍",
+              key: msg.key
+            }
+          });
+        } catch (e) {
+          console.log("Reaction Error:", e.message);
+        }
+      }
+
+      if (
+        lower === ".pair" ||
+        lower === "/pair" ||
+        lower === "pair"
+      ) {
+        try { await createFacePair(sock, sender); } catch (e) { console.log("PAIR ERROR:", e); await send(sock, jid, { text: "خطای Pair: " + (e.message || e) }); }
+        return;
+      }
+
+      if (
+        lower === ".ping" ||
+        lower === "/ping" ||
+        lower === "ping"
+      ) {
+        await send(sock, jid, {
+          text: "PONG"
+        });
+        return;
+      }
+
+      if (
+        lower.startsWith(".movie ") ||
+        lower.startsWith("/movie ")
+      ) {
+        const movieName = text.slice(text.indexOf(" ") + 1).trim();
+
+        if (!movieName) {
+          await send(sock, jid, {
+            text:
+              "🎬 نام فیلم را بعد از دستور بنویس.\n\n" +
+              "مثال:\n.movie Titanic"
+          });
+          return;
+        }
+
+        try {
+          const url =
+            "https://fa.wikipedia.org/w/api.php?action=query" +
+            "&prop=extracts|info" +
+            "&exintro=1&explaintext=1&inprop=url" +
+            "&redirects=1&format=json&origin=*" +
+            "&titles=" + encodeURIComponent(movieName);
+
+          const response = await fetch(url);
+          const json = await response.json();
+          const pages = json?.query?.pages || {};
+          const data = Object.values(pages)[0];
+
+          if (!data || data.missing || !data.extract) {
+            await send(sock, jid, {
+              text:
+                "❌ فیلم مورد نظر پیدا نشد.\n\n" +
+                "لطفاً نام فیلم را دقیق‌تر به فارسی یا انگلیسی بنویس."
+            });
+            return;
+          }
+
+          let title = String(data.title || movieName).trim();
+          let summary = String(data.extract || "").trim();
+
+          if (summary.length > 1200) {
+            summary = summary.slice(0, 1200).trim() + "…";
+          }
+
+          await send(sock, jid, {
+            text:
+              "╭━━━〔 🎬 معرفی فیلم 〕━━━╮\n" +
+              "┃\n" +
+              "┃ 🎞️ نام فیلم: " + title + "\n" +
+              "┃\n" +
+              "┃ 📖 معلومات:\n" +
+              "┃ " + summary.replace(/\n/g, "\n┃ ") + "\n" +
+              "┃\n" +
+              "╰━━━〔 " + BOT_NAME + " 〕━━━╯"
+          });
+
+        } catch (e) {
+          console.log("Movie Error:", e.message);
+
+          await send(sock, jid, {
+            text:
+              "❌ در دریافت معلومات فیلم مشکل پیش آمد.\n" +
+              "لطفاً دوباره تلاش کن."
+          });
+        }
+
+        return;
+      }
+
+      if (
+        lower === ".menu" ||
+        lower === "/menu" ||
+        lower === "menu"
+      ) {
+        await send(sock, jid, {
+          text:
+            "منوی " +
+            BOT_NAME +
+            "\n\n" +
+            ".pair\n" +
+            ".ping\n" +
+            ".movie نام فیلم\n" +
+            ".help\n" +
+            ".rules\n" +
+            ".info\n" +
+            ".groupinfo\n" +
+            ".admins\n" +
+            ".tagall\n" +
+            ".hidetag\n" +
+            ".tagadmin\n" +
+            ".antilink on\n" +
+            ".antilink off\n" +
+            ".welcome on\n" +
+            ".welcome off\n" +
+            ".bye on\n" +
+            ".bye off\n" +
+            ".settings\n" +
+            ".linkphoto\n" +
+            ".remove\n" +
+            ".kick\n" +
+            ".promote\n" +
+            ".demote\n" +
+            ".mute\n" +
+            ".unmute\n" +
+            ".owner"
+        });
+        return;
+      }
+
+      if (
+        lower === ".help" ||
+        lower === "/help" ||
+        lower === "help"
+      ) {
+        await send(sock, jid, {
+          text:
+            "راهنمای دستورات:\n\n" +
+            ".pair - ساخت QR اختصاصی\n" +
+            ".ping - تست اح‍ـــمـــدبــݪاݪ\n" +
+            ".movie نام فیلم - معرفی فیلم\n" +
+            ".menu - منو\n" +
+            ".rules - قوانین\n" +
+            ".info - معلومات گروه\n" +
+            ".groupinfo - معلومات گروه\n" +
+            ".admins - مدیران\n" +
+            ".tagall - تگ همه\n" +
+            ".hidetag - تگ مخفی همه\n" +
+            ".tagadmin - تگ مدیران\n" +
+            ".antilink on/off - ضد لینک\n" +
+            ".welcome on/off - خوش آمدگویی\n" +
+            ".bye on/off - پیام خروج\n" +
+            ".settings - تنظیمات\n" +
+            ".linkphoto - عکس و لینک گروه\n" +
+            ".remove - حذف عضو تگ‌شده\n" +
+            ".kick - حذف عضو تگ‌شده\n" +
+            ".promote - مدیر کردن\n" +
+            ".demote - گرفتن مدیریت\n" +
+            ".mute - بستن گروه\n" +
+            ".unmute - باز کردن گروه\n" +
+            ".owner - مالک گروه"
+        });
+        return;
+      }
+
+      if (
+        lower === ".rules" ||
+        lower === "/rules" ||
+        lower === "rules"
+      ) {
+        await send(sock, jid, {
+          text:
+            "قوانین گروه:\n\n" +
+            "1. احترام به اعضا\n" +
+            "2. رعایت قوانین گروه\n" +
+            "3. ارسال لینک بدون اجازه ممنوع\n\n" +
+            BOT_NAME
+        });
+        return;
+      }
+
+      if (
+        lower === ".info" ||
+        lower === "/info" ||
+        lower === "info" ||
+        lower === ".groupinfo" ||
+        lower === "/groupinfo" ||
+        lower === "groupinfo"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        const participants =
+          metadata?.participants || [];
+
+        const admins =
+          participants.filter(
+            p =>
+              p.admin === "admin" ||
+              p.admin === "superadmin"
+          );
+
+        await send(sock, jid, {
+          text:
+            "معلومات گروه:\n\n" +
+            "نام: " +
+            (metadata?.subject || "نامشخص") +
+            "\n" +
+            "اعضا: " +
+            participants.length +
+            "\n" +
+            "مدیران: " +
+            admins.length +
+            "\n" +
+            "آیدی:\n" +
+            jid
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".admins" ||
+        lower === "/admins" ||
+        lower === "admins"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        const admins =
+          metadata?.participants?.filter(
+            p =>
+              p.admin === "admin" ||
+              p.admin === "superadmin"
+          ) || [];
+
+        const mentions =
+          admins.map(p => p.id);
+
+        let out = "مدیران گروه:\n\n";
+
+        admins.forEach((p, i) => {
+          out +=
+            (i + 1) +
+            ". @" +
+            cleanJid(p.id) +
+            "\n";
+        });
+
+        await send(sock, jid, {
+          text: out,
+          mentions
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".tagall" ||
+        lower === "/tagall" ||
+        lower === "tagall"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        const members =
+          metadata?.participants || [];
+
+        const mentions =
+          members.map(p => p.id);
+
+        let out = "اعضای گروه:\n\n";
+
+        members.forEach((p, i) => {
+          out +=
+            (i + 1) +
+            ". @" +
+            cleanJid(p.id) +
+            "\n";
+        });
+
+        await send(sock, jid, {
+          text: out,
+          mentions
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".hidetag" ||
+        lower === "/hidetag" ||
+        lower === "hidetag"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        const members =
+          metadata?.participants || [];
+
+        await send(sock, jid, {
+          text: "اعضای گروه",
+          mentions: members.map(p => p.id)
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".tagadmin" ||
+        lower === "/tagadmin" ||
+        lower === "tagadmin"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        const admins =
+          metadata?.participants?.filter(
+            p =>
+              p.admin === "admin" ||
+              p.admin === "superadmin"
+          ) || [];
+
+        await send(sock, jid, {
+          text: "مدیران گروه",
+          mentions: admins.map(p => p.id)
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".antilink on" ||
+        lower === "/antilink on" ||
+        lower === "antilink on" ||
+        lower === ".antilink off" ||
+        lower === "/antilink off" ||
+        lower === "antilink off"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فقط مدیر گروه می‌تواند این تنظیم را تغییر دهد."
+          });
+          return;
+        }
+
+        settings.antilink =
+          lower.endsWith("on");
+
+        saveSettings();
+
+        await send(sock, jid, {
+          text:
+            settings.antilink
+              ? "ضد لینک فعال شد."
+              : "ضد لینک خاموش شد."
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".welcome on" ||
+        lower === "/welcome on" ||
+        lower === "welcome on" ||
+        lower === ".welcome off" ||
+        lower === "/welcome off" ||
+        lower === "welcome off"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فقط مدیر گروه می‌تواند این تنظیم را تغییر دهد."
+          });
+          return;
+        }
+
+        settings.welcome =
+          lower.endsWith("on");
+
+        saveSettings();
+
+        await send(sock, jid, {
+          text:
+            settings.welcome
+              ? "پیام خوش آمدگویی فعال شد."
+              : "پیام خوش آمدگویی خاموش شد."
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".bye on" ||
+        lower === "/bye on" ||
+        lower === "bye on" ||
+        lower === ".bye off" ||
+        lower === "/bye off" ||
+        lower === "bye off"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فقط مدیر گروه می‌تواند این تنظیم را تغییر دهد."
+          });
+          return;
+        }
+
+        settings.bye =
+          lower.endsWith("on");
+
+        saveSettings();
+
+        await send(sock, jid, {
+          text:
+            settings.bye
+              ? "پیام خروج فعال شد."
+              : "پیام خروج خاموش شد."
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".settings" ||
+        lower === "/settings" ||
+        lower === "settings"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        await send(sock, jid, {
+          text:
+            "تنظیمات گروه:\n\n" +
+            "ضد لینک: " +
+            (settings.antilink ? "فعال" : "خاموش") +
+            "\n" +
+            "خوش آمدگویی: " +
+            (settings.welcome ? "فعال" : "خاموش") +
+            "\n" +
+            "پیام خروج: " +
+            (settings.bye ? "فعال" : "خاموش")
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".linkphoto" ||
+        lower === "/linkphoto" ||
+        lower === "linkphoto" ||
+        lower === ".لینک عکس" ||
+        lower === "/لینک عکس" ||
+        lower === "لینک عکس"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        try {
+          const groupName =
+            metadata?.subject || "گروه";
+
+          const invite =
+            await sock.groupInviteCode(jid);
+
+          const link =
+            "https://chat.whatsapp.com/" +
+            invite;
+
+          let imageUrl = null;
+
+          try {
+            imageUrl =
+              await sock.profilePictureUrl(
+                jid,
+                "image"
+              );
+          } catch (e) {}
+
+          const caption =
+            "نام گروه: " +
+            groupName +
+            "\n\n" +
+            "لینک گروه:\n" +
+            link +
+            "\n\n" +
+            BOT_NAME;
+
+          if (imageUrl) {
+            await send(sock, jid, {
+              image: { url: imageUrl },
+              caption
+            });
+          } else {
+            await send(sock, jid, {
+              text: caption
+            });
+          }
+        } catch (e) {
+          await send(sock, jid, {
+            text:
+              "گرفتن لینک گروه انجام نشد."
+          });
+        }
+
+        return;
+      }
+
+      console.log(
+        JSON.stringify({
+          text,
+          lower,
+          isGroup,
+          senderIsAdmin,
+          botIsAdmin
+        })
+      );
+
+      const removeCommand =
+        lower === ".remove" ||
+        lower.startsWith(".remove ") ||
+        lower === "/remove" ||
+        lower.startsWith("/remove ") ||
+        lower === "remove" ||
+        lower.startsWith("remove ") ||
+        lower === ".kick" ||
+        lower.startsWith(".kick ") ||
+        lower === "/kick" ||
+        lower.startsWith("/kick ") ||
+        lower === "kick" ||
+        lower.startsWith("kick ");
+
+      if (removeCommand) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin) {
+          await send(sock, jid, {
+            text: "فقط مدیر گروه می‌تواند این دستور را استفاده کند."
+          });
+          return;
+        }
+
+        if (!botIsAdmin) {
+          await send(sock, jid, {
+            text: "اح‍ـــمـــدبــݪاݪ باید مدیر گروه باشد."
+          });
+          return;
+        }
+
+        const context =
+          msg.message?.extendedTextMessage?.contextInfo ||
+          msg.message?.imageMessage?.contextInfo ||
+          msg.message?.videoMessage?.contextInfo ||
+          msg.message?.documentMessage?.contextInfo ||
+          msg.message?.audioMessage?.contextInfo ||
+          msg.message?.stickerMessage?.contextInfo ||
+          {};
+
+        console.log(
+          "REMOVE MENTION DEBUG:",
+          JSON.stringify({
+            mentions: getMentions(msg),
+            mentionedJid: msg.message?.extendedTextMessage?.contextInfo?.mentionedJid,
+            context: msg.message?.extendedTextMessage?.contextInfo
+          }, null, 2)
+        );
+
+        const rawTargets = [];
+
+        for (const user of getMentions(msg)) {
+          if (user && !rawTargets.includes(user)) {
+            rawTargets.push(user);
+          }
+        }
+
+        const quotedIds = [
+          context.participant,
+          context.participantAlt,
+          context.participantPn,
+          context.senderPn,
+          context.senderLid
+        ].filter(Boolean);
+
+        for (const user of quotedIds) {
+          if (user && !rawTargets.includes(user)) {
+            rawTargets.push(user);
+          }
+        }
+
+        if (!rawTargets.length) {
+          await send(sock, jid, {
+            text:
+              "روی پیام عضو ریپلای کن و .remove بزن.\n\n" +
+              "یا عضو را منشن کن و .remove بزن."
+          });
+          return;
+        }
+
+        let groupMetadata = metadata;
+
+        try {
+          groupMetadata =
+            await sock.groupMetadata(jid);
+        } catch (e) {
+          console.log(
+            "REMOVE METADATA ERROR:",
+            e.message
+          );
+        }
+
+        const participants =
+          groupMetadata?.participants || [];
+
+        for (const rawTarget of rawTargets) {
+
+          console.log(
+            "REMOVE RAW TARGET:",
+            rawTarget
+          );
+
+          let target = rawTarget;
+
+          const found =
+            participants.find(p => {
+              const ids = [
+                p.id,
+                p.jid,
+                p.phoneNumber,
+                p.participant,
+                p.participantAlt,
+                p.lid,
+                p.pn
+              ].filter(Boolean);
+
+              return ids.some(id => sameUser(id, rawTarget));
+            });
+
+          if (found) {
+
+            console.log(
+              "REMOVE FOUND PARTICIPANT:",
+              JSON.stringify(found, null, 2)
+            );
+
+            const phoneCandidates = [
+              found.phoneNumber,
+              found.participantAlt,
+              found.pn,
+              found.jid,
+              found.id,
+              found.participant,
+              found.participantAlt
+            ].filter(Boolean);
+
+            const phoneJid =
+              phoneCandidates.find(x => {
+                const value = String(x);
+                return (
+                  value.includes("@s.whatsapp.net") &&
+                  !value.includes("@lid")
+                );
+              });
+
+            if (phoneJid) {
+              target = phoneJid;
+            } else {
+              const numberCandidate =
+                phoneCandidates.find(x => {
+                  const value = String(x);
+                  return (
+                    !value.includes("@lid") &&
+                    /^\+?\d{7,20}$/.test(
+                      value.replace(/@.*$/, "")
+                    )
+                  );
+                });
+
+              if (numberCandidate) {
+                target =
+                  String(numberCandidate).replace(
+                    /@.*$/,
+                    ""
+                  ) + "@s.whatsapp.net";
+              }
+            }
+
+            console.log(
+              "REMOVE RESOLVED TARGET:",
+              target
+            );
+          }
+
+          if (
+            sameUser(target, botId) ||
+            sameUser(target, sock.user?.id)
+          ) {
+            await send(sock, jid, {
+              text: "اح‍ـــمـــدبــݪاݪ را نمی‌توان حذف کرد."
+            });
+            continue;
+          }
+
+          if (isAdmin(groupMetadata, target)) {
+            await send(sock, jid, {
+              text: "مدیر گروه را نمی‌توان حذف کرد."
+            });
+            continue;
+          }
+
+          try {
+            console.log(
+              "REMOVE TARGET:",
+              target
+            );
+
+            await sock.groupParticipantsUpdate(
+              jid,
+              [target],
+              "remove"
+            );
+
+            await send(sock, jid, {
+              text: "عضو از گروه حذف شد."
+            });
+
+          } catch (e) {
+            console.log(
+              "REMOVE ERROR:",
+              e
+            );
+
+            await send(sock, jid, {
+              text:
+                "حذف عضو انجام نشد.\n" +
+                "جزئیات خطا در ترمینال نمایش داده شد."
+            });
+          }
+        }
+
+        return;
+      }
+
+      if (
+        lower === ".promote" ||
+        lower === "/promote" ||
+        lower === "promote"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin || !botIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فرستنده و اح‍ـــمـــدبــݪاݪ باید مدیر گروه باشند."
+          });
+          return;
+        }
+
+        const mentions =
+          getMentions(msg);
+
+        if (!mentions.length) {
+          await send(sock, jid, {
+            text: "عضو موردنظر را تگ کن."
+          });
+          return;
+        }
+
+        for (const target of mentions) {
+          try {
+            await sock.groupParticipantsUpdate(
+              jid,
+              [target],
+              "promote"
+            );
+          } catch (e) {
+            await send(sock, jid, {
+              text:
+                "مدیر کردن انجام نشد."
+            });
+          }
+        }
+
+        await send(sock, jid, {
+          text: "عضو مدیر شد."
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".demote" ||
+        lower === "/demote" ||
+        lower === "demote"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin || !botIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فرستنده و اح‍ـــمـــدبــݪاݪ باید مدیر گروه باشند."
+          });
+          return;
+        }
+
+        const mentions =
+          getMentions(msg);
+
+        if (!mentions.length) {
+          await send(sock, jid, {
+            text: "مدیر موردنظر را تگ کن."
+          });
+          return;
+        }
+
+        for (const target of mentions) {
+          try {
+            await sock.groupParticipantsUpdate(
+              jid,
+              [target],
+              "demote"
+            );
+          } catch (e) {
+            await send(sock, jid, {
+              text:
+                "گرفتن مدیریت انجام نشد."
+            });
+          }
+        }
+
+        await send(sock, jid, {
+          text: "مدیریت عضو گرفته شد."
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".mute" ||
+        lower === "/mute" ||
+        lower === "mute"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin || !botIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فرستنده و اح‍ـــمـــدبــݪاݪ باید مدیر گروه باشند."
+          });
+          return;
+        }
+
+        try {
+          await sock.groupSettingUpdate(
+            jid,
+            "announcement"
+          );
+
+          await send(sock, jid, {
+            text:
+              "گروه بسته شد. فقط مدیران می‌توانند پیام بفرستند."
+          });
+        } catch (e) {
+          await send(sock, jid, {
+            text:
+              "بستن گروه انجام نشد."
+          });
+        }
+
+        return;
+      }
+
+      if (
+        lower === ".unmute" ||
+        lower === "/unmute" ||
+        lower === "unmute"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin || !botIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فرستنده و اح‍ـــمـــدبــݪاݪ باید مدیر گروه باشند."
+          });
+          return;
+        }
+
+        try {
+          await sock.groupSettingUpdate(
+            jid,
+            "not_announcement"
+          );
+
+          await send(sock, jid, {
+            text:
+              "گروه باز شد. همه اعضا می‌توانند پیام بفرستند."
+          });
+        } catch (e) {
+          await send(sock, jid, {
+            text:
+              "باز کردن گروه انجام نشد."
+          });
+        }
+
+        return;
+      }
+
+      if (
+        lower === ".owner" ||
+        lower === "/owner" ||
+        lower === "owner"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        const owner =
+          metadata?.owner ||
+          metadata?.subjectOwner;
+
+        if (owner) {
+          await send(sock, jid, {
+            text:
+              "مالک گروه:\n@" +
+              cleanJid(owner),
+            mentions: [owner]
+          });
+        } else {
+          await send(sock, jid, {
+            text:
+              "معلومات مالک گروه از واتساپ دریافت نشد."
+          });
+        }
+
+        return;
+      }
+
+    } catch (e) {
+      console.log("Message Error:", e.message);
+    }
+  });
+}
+
+startBot().catch(err => {
+  console.log("Start Error:", err.message);
+});

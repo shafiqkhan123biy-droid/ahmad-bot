@@ -1,0 +1,1886 @@
+const readline = require("readline");
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  Browsers
+} = require("@whiskeysockets/baileys");
+
+const pino = require("pino");
+const fs = require("fs");
+const QRCode = require("qrcode");
+const qrcode = require("qrcode-terminal");
+
+const BOT_NAME = "اح‍ـــمـــدبــݪاݪ نۅࢪی";
+const SESSION = "./session";
+const SETTINGS_FILE = "./group-settings.json";
+
+function loadSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
+    }
+  } catch (e) {
+    console.log("Settings Load Error:", e.message);
+  }
+  return {};
+}
+
+let groupSettings = loadSettings();
+
+function saveSettings() {
+  try {
+    fs.writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify(groupSettings, null, 2)
+    );
+  } catch (e) {
+    console.log("Settings Save Error:", e.message);
+  }
+}
+
+function getSettings(jid) {
+  if (!groupSettings[jid]) {
+    groupSettings[jid] = {
+      antilink: false,
+      welcome: true,
+      bye: true,
+      welcomeText: "خوش آمدی به گروه!",
+      byeText: "یک عضو از گروه خارج شد."
+    };
+    saveSettings();
+  }
+
+  return groupSettings[jid];
+}
+
+function getText(msg) {
+  const m = msg.message;
+  if (!m) return "";
+
+  return (
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    m.documentMessage?.caption ||
+    ""
+  ).trim();
+}
+
+function cleanJid(jid) {
+  if (!jid) return "";
+
+  return jid
+    .split(":")[0]
+    .split("@")[0]
+    .replace(/\D/g, "");
+}
+
+function sameUser(a, b) {
+  return cleanJid(a) !== "" && cleanJid(a) === cleanJid(b);
+}
+
+function isAdmin(metadata, user) {
+  if (!metadata || !user) return false;
+
+  const participant = metadata.participants?.find(
+    p => sameUser(p.id, user)
+  );
+
+  return !!(
+    participant &&
+    (
+      participant.admin === "admin" ||
+      participant.admin === "superadmin"
+    )
+  );
+}
+
+
+const CHAT_STATS_FILE = "./chat-stats.json";
+
+let chatStats = {};
+
+function loadChatStats() {
+  try {
+    if (fs.existsSync(CHAT_STATS_FILE)) {
+      chatStats = JSON.parse(
+        fs.readFileSync(CHAT_STATS_FILE, "utf8")
+      );
+    }
+  } catch (e) {
+    console.log("خطا در خواندن آمار:", e.message);
+    chatStats = {};
+  }
+}
+
+function saveChatStats() {
+  try {
+    fs.writeFileSync(
+      CHAT_STATS_FILE,
+      JSON.stringify(chatStats, null, 2)
+    );
+  } catch (e) {
+    console.log("خطا در ذخیره آمار:", e.message);
+  }
+}
+
+function getKabulDate(offsetDays = 0) {
+  const now = new Date();
+
+  if (offsetDays !== 0) {
+    now.setTime(
+      now.getTime() + offsetDays * 24 * 60 * 60 * 1000
+    );
+  }
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kabul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now);
+
+  const obj = {};
+
+  for (const x of parts) {
+    if (x.type !== "literal") {
+      obj[x.type] = x.value;
+    }
+  }
+
+  return (
+    obj.year +
+    "-" +
+    obj.month +
+    "-" +
+    obj.day
+  );
+}
+
+function getUserStats(jid) {
+  const id = cleanJid(jid);
+
+  if (!chatStats[id]) {
+    chatStats[id] = {
+      total: 0,
+      days: {}
+    };
+  }
+
+  if (!chatStats[id].days) {
+    chatStats[id].days = {};
+  }
+
+  return chatStats[id];
+}
+
+function addChatMessage(jid) {
+  const id = cleanJid(jid);
+
+  if (!id) return;
+
+  const stats = getUserStats(id);
+  const today = getKabulDate(0);
+
+  stats.total =
+    Number(stats.total || 0) + 1;
+
+  stats.days[today] =
+    Number(stats.days[today] || 0) + 1;
+
+  saveChatStats();
+}
+
+function getChatRank(jid) {
+  const id = cleanJid(jid);
+
+  const users = Object.entries(chatStats)
+    .map(([user, data]) => ({
+      user,
+      total: Number(data?.total || 0)
+    }))
+    .filter(x => x.total > 0)
+    .sort((a, b) => {
+      if (b.total !== a.total) {
+        return b.total - a.total;
+      }
+
+      return a.user.localeCompare(b.user);
+    });
+
+  const index =
+    users.findIndex(x => x.user === id);
+
+  return index === -1 ? "-" : index + 1;
+}
+
+function getTopChatUsers(limit = 10) {
+  return Object.entries(chatStats)
+    .map(([user, data]) => ({
+      user,
+      total: Number(data?.total || 0)
+    }))
+    .filter(x => x.total > 0)
+    .sort((a, b) => {
+      if (b.total !== a.total) {
+        return b.total - a.total;
+      }
+
+      return a.user.localeCompare(b.user);
+    })
+    .slice(0, limit);
+}
+
+function getMemberName(metadata, jid) {
+  const clean = cleanJid(jid);
+
+  if (metadata?.participants) {
+    const participant = metadata.participants.find(p => {
+      return cleanJid(p.id) === clean;
+    });
+
+    if (participant) {
+      const name =
+        participant.notify ||
+        participant.name ||
+        participant.vname;
+
+      if (name && String(name).trim()) {
+        return String(name).trim();
+      }
+    }
+  }
+
+  const number = clean.replace(/\D/g, "");
+
+  if (number) {
+    return "+" + number;
+  }
+
+  return "کاربر";
+}
+
+loadChatStats();
+
+function hasLink(text) {
+  return /(https?:\/\/|www\.|chat\.whatsapp\.com\/|wa\.me\/|t\.me\/|telegram\.me\/)/i.test(text);
+}
+
+function getMentions(msg) {
+  return (
+    msg.message?.extendedTextMessage?.contextInfo?.mentionedJid ||
+    msg.message?.imageMessage?.contextInfo?.mentionedJid ||
+    msg.message?.videoMessage?.contextInfo?.mentionedJid ||
+    []
+  );
+}
+
+async function send(sock, jid, content) {
+  try {
+    await sock.sendMessage(jid, content);
+  } catch (e) {
+    console.log("Send Error:", e.message);
+  }
+}
+
+const faceSockets = new Map();
+let facePairCounter = 0;
+
+async function createFacePair(sock, requesterJid) {
+  const number = cleanJid(requesterJid);
+
+  if (!number) {
+    await send(sock, requesterJid, {
+      text: "شناسه کاربر دریافت نشد."
+    });
+    return;
+  }
+
+  fs.mkdirSync("./sessions", { recursive: true });
+
+  const pairId =
+    Date.now().toString(36) +
+    "-" +
+    (++facePairCounter) +
+    "-" +
+    Math.random().toString(36).slice(2, 10);
+
+  const sessionPath = "./sessions/pair-" + pairId;
+
+  try {
+    const { state, saveCreds } =
+      await useMultiFileAuthState(sessionPath);
+
+    const face = makeWASocket({
+      auth: state,
+      logger: pino({ level: "silent" }),
+      browser: Browsers.macOS("NIGHT LORD AHMAD BILAL"),
+      printQRInTerminal: false,
+      generateHighQualityLinkPreview: false
+    });
+
+    faceSockets.set(pairId, face);
+
+    face.ev.on("creds.update", saveCreds);
+
+    let qrSent = false;
+
+    face.ev.on("connection.update", async update => {
+      try {
+        const { connection, qr, lastDisconnect } = update;
+
+        if (qr && !qrSent) {
+          qrSent = true;
+
+          const dataUrl = await QRCode.toDataURL(qr, {
+            errorCorrectionLevel: "H",
+            margin: 2,
+            width: 900
+          });
+
+          const imageBuffer = Buffer.from(
+            dataUrl.split(",")[1],
+            "base64"
+          );
+
+          await send(sock, requesterJid, {
+            image: imageBuffer,
+            caption:
+              "QR اتصال آماده است.\n\n" +
+              "واتساپ → دستگاه‌های مرتبط → اتصال دستگاه\n" +
+              "سپس این QR را اسکن کن.\n\n" +
+              "این QR مخصوص همین درخواست است."
+          });
+
+          console.log("QR ساخته شد:", pairId);
+        }
+
+        if (connection === "open") {
+          console.log("Face وصل شد:", pairId);
+
+          await send(sock, requesterJid, {
+            text:
+              "اتصال موفق شد.\n" +
+              "این Session به‌صورت جداگانه فعال شد."
+          });
+        }
+
+        if (connection === "close") {
+          const code =
+            lastDisconnect?.error?.output?.statusCode;
+
+          console.log(
+            "Face قطع شد:",
+            pairId,
+            "کد:",
+            code
+          );
+
+          faceSockets.delete(pairId);
+
+          if (code === DisconnectReason.loggedOut) {
+            await send(sock, requesterJid, {
+              text: "این Session از واتساپ خارج شد."
+            });
+          }
+        }
+      } catch (e) {
+        console.log(
+          "Face Connection Error:",
+          pairId,
+          e.message
+        );
+      }
+    });
+
+    face.ev.on("messages.upsert", async event => {
+      try {
+        if (event.type !== "notify") return;
+
+        for (const m of event.messages || []) {
+          if (!m.message) continue;
+
+          console.log(
+            "Face message:",
+            pairId,
+            m.key.remoteJid
+          );
+        }
+      } catch (e) {
+        console.log(
+          "Face Message Error:",
+          pairId,
+          e.message
+        );
+      }
+    });
+
+    await send(sock, requesterJid, {
+      text:
+        "در حال ساخت QR اتصال...\n" +
+        "لطفاً چند لحظه صبر کن."
+    });
+
+  } catch (e) {
+    console.log(
+      "Face Pair Error:",
+      pairId,
+      e.message
+    );
+
+    faceSockets.delete(pairId);
+
+    await send(sock, requesterJid, {
+      text:
+        "خطا در ساخت این QR.\n" +
+        "دوباره .pair بفرست."
+    });
+  }
+}
+
+async function startBot() {
+  const { state, saveCreds } =
+    await useMultiFileAuthState(SESSION);
+
+  const sock = makeWASocket({
+    auth: state,
+    logger: pino({ level: "silent" }),
+    browser: Browsers.macOS("NIGHT LORD AHMAD BILAL"),
+    printQRInTerminal: false,
+    generateHighQualityLinkPreview: false
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("connection.update", async update => {
+    const { connection, qr, lastDisconnect } = update;
+
+    if (qr) { console.log("QR اصلی را اسکن کن:"); qrcode.generate(qr, { small: true }); }
+    if (connection === "connecting") {
+      console.log("در حال اتصال به واتساپ...");
+    }
+
+    if (connection === "open") {
+      console.log("");
+      console.log("================================");
+      console.log(BOT_NAME + " وصل شد!");
+      console.log("ربات فعال است");
+      console.log("================================");
+      console.log("");
+    }
+
+    if (connection === "close") {
+      const code =
+        lastDisconnect?.error?.output?.statusCode;
+
+      console.log("اتصال قطع شد. کد:", code);
+
+      if (code !== DisconnectReason.loggedOut) {
+        console.log("در حال اتصال دوباره...");
+        setTimeout(startBot, 5000);
+      } else {
+        console.log("جلسه واتساپ خارج شده است.");
+      }
+    }
+  });
+
+  let lastWelcomeMessages = new Map();
+
+  sock.ev.on("group-participants.update", async update => {
+    try {
+      const settings = getSettings(update.id);
+
+      if (update.action === "add" && settings.welcome) {
+        const groupMetadata = await sock.groupMetadata(update.id);
+        const groupName = groupMetadata?.subject || "گروپ ما";
+        const memberCount = groupMetadata?.participants?.length || 0;
+
+        for (const user of update.participants || []) {
+
+          const oldWelcome = lastWelcomeMessages.get(update.id);
+
+          if (oldWelcome) {
+            try {
+              await sock.sendMessage(update.id, {
+                delete: oldWelcome
+              });
+            } catch (e) {
+              console.log("پیام قبلی حذف نشد:", e.message);
+            }
+          }
+
+          const welcomeText =
+            "╭───❀ خوش آمدی ❀───╮\n\n" +
+            "خوش آمدی @" + cleanJid(user) + " عزیز\n\n" +
+            "به گروپ " + groupName + " خوش آمدی.\n" +
+            "امیدواریم لحظات خوبی در کنار ما داشته باشی.\n\n" +
+            "تعداد اعضای گروپ: " + memberCount + "\n\n" +
+            "لطفاً قوانین گروپ را رعایت کن.\n\n" +
+            "برای مطالب و اطلاعیه‌های بیشتر:\n" +
+            "کانال ما:\n" +
+            "https://whatsapp.com/channel/0029VbDQIGtDuMRjUa47Jl20\n\n" +
+            BOT_NAME +
+            "\n╰────────────────╯";
+
+          let sent = null;
+
+          try {
+            const imageUrl = await sock.profilePictureUrl(user, "image");
+
+            if (imageUrl) {
+              const response = await fetch(imageUrl);
+
+              if (response.ok) {
+                const imageBuffer = Buffer.from(
+                  await response.arrayBuffer()
+                );
+
+                sent = await sock.sendMessage(update.id, {
+                  image: imageBuffer,
+                  caption: welcomeText,
+                  mentions: [user]
+                });
+              }
+            }
+          } catch (e) {
+            console.log("عکس پروفایل در دسترس نیست.");
+          }
+
+          if (!sent) {
+            sent = await sock.sendMessage(update.id, {
+              text: welcomeText,
+              mentions: [user]
+            });
+          }
+
+          if (sent?.key) {
+            lastWelcomeMessages.set(update.id, sent.key);
+          }
+        }
+      }
+
+      if (update.action === "remove" && settings.bye) {
+        for (const user of update.participants || []) {
+          await send(sock, update.id, {
+            text:
+              settings.byeText +
+              "\n\nعضو: @" +
+              cleanJid(user) +
+              "\n\n" +
+              BOT_NAME,
+            mentions: [user]
+          });
+        }
+      }
+
+    } catch (e) {
+      console.log("Participant Error:", e.message);
+    }
+  });
+
+  sock.ev.on("messages.upsert", async ({ messages }) => {
+    try {
+      const msg = messages?.[0];
+
+      if (!msg || !msg.message) return;
+
+
+      const jid = msg.key.remoteJid;
+
+      // ثبت آمار پیام‌های اعضای گروپ
+      if (
+        jid &&
+        jid.endsWith("@g.us") &&
+        !msg.key.fromMe
+      ) {
+        const statsUser =
+          msg.key.participant ||
+          msg.participant ||
+          msg.key.remoteJid;
+
+        if (statsUser) {
+          addChatMessage(statsUser);
+        }
+      }
+
+
+      if (!jid || jid === "status@broadcast") return;
+
+      const text = getText(msg);
+
+      if (!text) return;
+
+      const lower = text.toLowerCase().trim();
+
+      const isGroup = jid.endsWith("@g.us");
+
+      let metadata = null;
+
+      if (isGroup) {
+        try {
+          metadata = await sock.groupMetadata(jid);
+        } catch (e) {
+          console.log("Metadata Error:", e.message);
+        }
+      }
+
+      const sender =
+        msg.key.participant ||
+        msg.participant ||
+        msg.key.remoteJid;
+
+      const botId = sock.user?.id || "";
+
+      const senderIsAdmin =
+        isGroup && isAdmin(metadata, sender);
+
+      const botIsAdmin =
+        isGroup && isAdmin(metadata, botId);
+
+      const settings =
+        isGroup ? getSettings(jid) : null;
+
+      if (
+        lower === "امار چت" ||
+        lower === "آمار چت"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text:
+              "این دستور فقط در گروپ قابل استفاده است."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "این دستور فقط برای مدیران گروپ است."
+          });
+          return;
+        }
+
+        const top =
+          getTopChatUsers(10);
+
+        const memberCount =
+          metadata?.participants?.length || 0;
+
+        const now = new Date();
+
+        const dateText =
+          new Intl.DateTimeFormat(
+            "fa-AF-u-ca-islamic",
+            {
+              timeZone: "Asia/Kabul",
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+              weekday: "long"
+            }
+          ).format(now);
+
+        const timeText =
+          new Intl.DateTimeFormat(
+            "fa-AF",
+            {
+              timeZone: "Asia/Kabul",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hour12: false
+            }
+          ).format(now);
+
+        const medals = [
+          "🥇",
+          "🥈",
+          "🥉",
+          "➃",
+          "➄",
+          "➅",
+          "➆",
+          "➇",
+          "➈",
+          "➉"
+        ];
+
+        const groupName =
+          metadata?.subject || "گروپ ما";
+
+        let result =
+          "╭━━━〔 آمار فعالیت گروپ 〕━━━╮\n" +
+          "┃  " + groupName + "\n" +
+          "┃  👥 تعداد اعضا : " + memberCount + "\n" +
+          "┃  📅 " + dateText + "\n" +
+          "┃  🕐 " + timeText + " | کابل افغانستان\n" +
+          "╰━━━━━━━━━━━━━━━━━━━━╯\n\n" +
+          "🏆 نفرات فعال گروپ\n" +
+          "━━━━━━━━━━━━━━━━━━\n";
+
+        if (top.length === 0) {
+
+          result +=
+            "هنوز آماری از اعضای گروپ ثبت نشده است.";
+
+        } else {
+
+          for (let i = 0; i < top.length; i++) {
+
+            const user = top[i];
+
+            const name =
+              getMemberName(
+                metadata,
+                user.user
+              );
+
+            result +=
+              "• رتـبه" +
+              medals[i] +
+              " : " +
+              name +
+              " | " +
+              user.total +
+              " بار\n";
+          }
+        }
+
+        await send(sock, jid, {
+          text: result
+        });
+
+        return;
+      }
+
+
+      
+      if (
+        lower === "آیدی" ||
+        lower === "ایدی"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط داخل گروپ کار می‌کند."
+          });
+          return;
+        }
+
+        const context =
+          msg.message?.extendedTextMessage?.contextInfo ||
+          msg.message?.imageMessage?.contextInfo ||
+          msg.message?.videoMessage?.contextInfo ||
+          msg.message?.documentMessage?.contextInfo ||
+          msg.message?.audioMessage?.contextInfo ||
+          msg.message?.stickerMessage?.contextInfo ||
+          {};
+
+        const mentions = getMentions(msg);
+
+        const replyIds = [
+          context.participant,
+          context.participantAlt,
+          context.participantPn,
+          context.senderPn,
+          context.senderLid
+        ].filter(Boolean);
+
+        const targetIds = [
+          ...mentions,
+          ...replyIds
+        ];
+
+        let target = sender;
+
+        if (targetIds.length > 0) {
+          const otherTarget = targetIds.find(x => {
+            return cleanJid(x) !== cleanJid(sender);
+          });
+
+          if (otherTarget) {
+            if (!senderIsAdmin) {
+              await send(sock, jid, {
+                text:
+                  "فقط ادمین گروپ می‌تواند آمار شخص دیگری را ببیند."
+              });
+              return;
+            }
+
+            target = otherTarget;
+          }
+        }
+
+        /*
+         * تمام شناسه‌های احتمالی این شخص را جمع می‌کنیم:
+         * LID، شماره، participantAlt و شماره جایگزین.
+         */
+        const candidates = [];
+
+        const addCandidate = value => {
+          if (!value) return;
+
+          const str = String(value);
+
+          if (
+            !candidates.some(
+              x => cleanJid(x) === cleanJid(str)
+            )
+          ) {
+            candidates.push(str);
+          }
+        };
+
+        addCandidate(target);
+
+        const participant =
+          metadata?.participants?.find(p => {
+            const ids = [
+              p.id,
+              p.jid,
+              p.phoneNumber,
+              p.participant,
+              p.participantAlt,
+              p.lid,
+              p.pn
+            ].filter(Boolean);
+
+            return ids.some(
+              id =>
+                cleanJid(id) === cleanJid(target)
+            );
+          });
+
+        if (participant) {
+          addCandidate(participant.id);
+          addCandidate(participant.jid);
+          addCandidate(participant.phoneNumber);
+          addCandidate(participant.participant);
+          addCandidate(participant.participantAlt);
+          addCandidate(participant.lid);
+          addCandidate(participant.pn);
+        }
+
+        /*
+         * اگر Reply باشد، شناسه‌های موجود در context
+         * را هم به candidates اضافه می‌کنیم.
+         */
+        for (const id of replyIds) {
+          addCandidate(id);
+        }
+
+        /*
+         * همان ID که واقعاً در chatStats وجود دارد را پیدا کن.
+         */
+        let realTarget = null;
+        let bestStats = null;
+        let bestTotal = -1;
+
+        for (const candidate of candidates) {
+          const candidateStats =
+            getUserStats(candidate);
+
+          const total =
+            Number(candidateStats?.total || 0);
+
+          if (total > bestTotal) {
+            bestTotal = total;
+            realTarget = candidate;
+            bestStats = candidateStats;
+          }
+        }
+
+        if (!realTarget) {
+          realTarget = target;
+          bestStats = getUserStats(realTarget);
+        }
+
+        const stats = bestStats || getUserStats(realTarget);
+
+        const today =
+          getKabulDate(0);
+
+        const yesterday =
+          getKabulDate(-1);
+
+        const todayCount =
+          Number(stats.days?.[today] || 0);
+
+        const yesterdayCount =
+          Number(stats.days?.[yesterday] || 0);
+
+        const totalCount =
+          Number(stats.total || 0);
+
+        const rank =
+          getChatRank(realTarget);
+
+        let name =
+          getMemberName(metadata, realTarget);
+
+        /*
+         * اگر شخص خود کاربر باشد، نام واتساپ پیام را ترجیح بده.
+         */
+        if (
+          cleanJid(realTarget) ===
+          cleanJid(sender)
+        ) {
+          name =
+            msg.pushName ||
+            name;
+        }
+
+        await send(sock, jid, {
+          text:
+            "╭━━━〔 پروفایل فعالیت 〕━━━╮\n" +
+            "┃ 👤 نام : " + name + "\n" +
+            "┣━━━━━━━━━━━━━━━━━━\n" +
+            "┃ 📅 امروز : " + todayCount + " پیام\n" +
+            "┃ 🕐 دیروز : " + yesterdayCount + " پیام\n" +
+            "┃ 💬 مجموع : " + totalCount + " پیام\n" +
+            "┃ 🏆 رتبه : " + rank + "\n" +
+            "╰━━━━━━━━━━━━━━━━━━╯"
+        });
+
+        return;
+      }
+
+
+      if (
+        isGroup &&
+        settings.antilink &&
+        !msg.key.fromMe &&
+        hasLink(text)
+      ) {
+        if (!senderIsAdmin) {
+          try {
+            await sock.sendMessage(jid, {
+              delete: msg.key
+            });
+          } catch (e) {
+            console.log("Delete Link Error:", e.message);
+          }
+
+          if (botIsAdmin) {
+            try {
+              await sock.groupParticipantsUpdate(
+                jid,
+                [sender],
+                "remove"
+              );
+
+              await send(sock, jid, {
+                text:
+                  "لینک ممنوع است.\nپیام حذف شد و فرستنده از گروه حذف گردید."
+              });
+            } catch (e) {
+              await send(sock, jid, {
+                text:
+                  "لینک حذف شد، اما حذف فرستنده انجام نشد."
+              });
+            }
+          } else {
+            await send(sock, jid, {
+              text:
+                "لینک حذف شد.\nبرای حذف فرستنده، ربات باید مدیر گروه باشد."
+            });
+          }
+
+          return;
+        }
+      }
+
+      // واکنش به پیام ادمین قبل از اجرای هر دستور
+      if (
+        isAdmin(metadata, sender) &&
+        (
+          lower.startsWith(".") ||
+          lower.startsWith("/") ||
+          lower === "pair"
+        )
+      ) {
+        try {
+          await sock.sendMessage(jid, {
+            react: {
+              text: "👍",
+              key: msg.key
+            }
+          });
+        } catch (e) {
+          console.log("Reaction Error:", e.message);
+        }
+      }
+
+      if (
+        lower === ".pair" ||
+        lower === "/pair" ||
+        lower === "pair"
+      ) {
+        try { await createFacePair(sock, sender); } catch (e) { console.log("PAIR ERROR:", e); await send(sock, jid, { text: "خطای Pair: " + (e.message || e) }); }
+        return;
+      }
+
+      if (
+        lower === ".ping" ||
+        lower === "/ping" ||
+        lower === "ping"
+      ) {
+        await send(sock, jid, {
+          text: "PONG"
+        });
+        return;
+      }
+
+      if (
+        lower.startsWith(".movie ") ||
+        lower.startsWith("/movie ")
+      ) {
+        const movieName = text.slice(text.indexOf(" ") + 1).trim();
+
+        if (!movieName) {
+          await send(sock, jid, {
+            text:
+              "نام فیلم را بعد از دستور بنویس.\n\n" +
+              "مثال:\n.movie Titanic"
+          });
+          return;
+        }
+
+        try {
+          let title = movieName;
+          let data = null;
+
+          const languages = ["fa", "en"];
+
+          for (const lang of languages) {
+            const url =
+              "https://" + lang +
+              ".wikipedia.org/w/api.php?action=query&prop=extracts|info&exintro=1&explaintext=1&inprop=url&redirects=1&format=json&origin=*&titles=" +
+              encodeURIComponent(movieName);
+
+            const response = await fetch(url);
+            const json = await response.json();
+            const pages = json?.query?.pages || {};
+            const page = Object.values(pages)[0];
+
+            if (page && !page.missing && page.extract) {
+              data = page;
+              break;
+            }
+          }
+
+          if (!data) {
+            await send(sock, jid, {
+              text:
+                "فیلم مورد نظر پیدا نشد.\n" +
+                "نام فیلم را دقیق‌تر بنویس."
+            });
+            return;
+          }
+
+          title = data.title || movieName;
+
+          let summary = (data.extract || "").trim();
+
+          if (summary.length > 900) {
+            summary = summary.slice(0, 900).trim() + "...";
+          }
+
+          await send(sock, jid, {
+            text:
+              "╭───❀ معرفی فیلم ❀───╮\n\n" +
+              "🎬 نام: " + title + "\n\n" +
+              "📖 معرفی:\n" +
+              summary + "\n\n" +
+              BOT_NAME +
+              "\n╰────────────────╯"
+          });
+
+        } catch (e) {
+          console.log("Movie Error:", e.message);
+
+          await send(sock, jid, {
+            text:
+              "در دریافت معلومات فیلم مشکل پیش آمد.\n" +
+              "دوباره تلاش کن."
+          });
+        }
+
+        return;
+      }
+
+      if (
+        lower === ".menu" ||
+        lower === "/menu" ||
+        lower === "menu"
+      ) {
+        await send(sock, jid, {
+          text:
+            "منوی " +
+            BOT_NAME +
+            "\n\n" +
+            ".pair\n" +
+            ".ping\n" +
+            ".movie نام فیلم\n" +
+            ".help\n" +
+            ".rules\n" +
+            ".info\n" +
+            ".groupinfo\n" +
+            ".admins\n" +
+            ".tagall\n" +
+            ".hidetag\n" +
+            ".tagadmin\n" +
+            ".antilink on\n" +
+            ".antilink off\n" +
+            ".welcome on\n" +
+            ".welcome off\n" +
+            ".bye on\n" +
+            ".bye off\n" +
+            ".settings\n" +
+            ".linkphoto\n" +
+            ".remove\n" +
+            ".kick\n" +
+            ".promote\n" +
+            ".demote\n" +
+            ".mute\n" +
+            ".unmute\n" +
+            ".owner"
+        });
+        return;
+      }
+
+      if (
+        lower === ".help" ||
+        lower === "/help" ||
+        lower === "help"
+      ) {
+        await send(sock, jid, {
+          text:
+            "راهنمای دستورات:\n\n" +
+            ".pair - ساخت QR اختصاصی\n" +
+            ".ping - تست ربات\n" +
+            ".movie نام فیلم - معرفی فیلم\n" +
+            ".menu - منو\n" +
+            ".rules - قوانین\n" +
+            ".info - معلومات گروه\n" +
+            ".groupinfo - معلومات گروه\n" +
+            ".admins - مدیران\n" +
+            ".tagall - تگ همه\n" +
+            ".hidetag - تگ مخفی همه\n" +
+            ".tagadmin - تگ مدیران\n" +
+            ".antilink on/off - ضد لینک\n" +
+            ".welcome on/off - خوش آمدگویی\n" +
+            ".bye on/off - پیام خروج\n" +
+            ".settings - تنظیمات\n" +
+            ".linkphoto - عکس و لینک گروه\n" +
+            ".remove - حذف عضو تگ‌شده\n" +
+            ".kick - حذف عضو تگ‌شده\n" +
+            ".promote - مدیر کردن\n" +
+            ".demote - گرفتن مدیریت\n" +
+            ".mute - بستن گروه\n" +
+            ".unmute - باز کردن گروه\n" +
+            ".owner - مالک گروه"
+        });
+        return;
+      }
+
+      if (
+        lower === ".rules" ||
+        lower === "/rules" ||
+        lower === "rules"
+      ) {
+        await send(sock, jid, {
+          text:
+            "قوانین گروه:\n\n" +
+            "1. احترام به اعضا\n" +
+            "2. رعایت قوانین گروه\n" +
+            "3. ارسال لینک بدون اجازه ممنوع\n\n" +
+            BOT_NAME
+        });
+        return;
+      }
+
+      if (
+        lower === ".info" ||
+        lower === "/info" ||
+        lower === "info" ||
+        lower === ".groupinfo" ||
+        lower === "/groupinfo" ||
+        lower === "groupinfo"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        const participants =
+          metadata?.participants || [];
+
+        const admins =
+          participants.filter(
+            p =>
+              p.admin === "admin" ||
+              p.admin === "superadmin"
+          );
+
+        await send(sock, jid, {
+          text:
+            "معلومات گروه:\n\n" +
+            "نام: " +
+            (metadata?.subject || "نامشخص") +
+            "\n" +
+            "اعضا: " +
+            participants.length +
+            "\n" +
+            "مدیران: " +
+            admins.length +
+            "\n" +
+            "آیدی:\n" +
+            jid
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".admins" ||
+        lower === "/admins" ||
+        lower === "admins"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        const admins =
+          metadata?.participants?.filter(
+            p =>
+              p.admin === "admin" ||
+              p.admin === "superadmin"
+          ) || [];
+
+        const mentions =
+          admins.map(p => p.id);
+
+        let out = "مدیران گروه:\n\n";
+
+        admins.forEach((p, i) => {
+          out +=
+            (i + 1) +
+            ". @" +
+            cleanJid(p.id) +
+            "\n";
+        });
+
+        await send(sock, jid, {
+          text: out,
+          mentions
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".tagall" ||
+        lower === "/tagall" ||
+        lower === "tagall"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        const members =
+          metadata?.participants || [];
+
+        const mentions =
+          members.map(p => p.id);
+
+        let out = "اعضای گروه:\n\n";
+
+        members.forEach((p, i) => {
+          out +=
+            (i + 1) +
+            ". @" +
+            cleanJid(p.id) +
+            "\n";
+        });
+
+        await send(sock, jid, {
+          text: out,
+          mentions
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".hidetag" ||
+        lower === "/hidetag" ||
+        lower === "hidetag"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        const members =
+          metadata?.participants || [];
+
+        await send(sock, jid, {
+          text: "اعضای گروه",
+          mentions: members.map(p => p.id)
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".tagadmin" ||
+        lower === "/tagadmin" ||
+        lower === "tagadmin"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        const admins =
+          metadata?.participants?.filter(
+            p =>
+              p.admin === "admin" ||
+              p.admin === "superadmin"
+          ) || [];
+
+        await send(sock, jid, {
+          text: "مدیران گروه",
+          mentions: admins.map(p => p.id)
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".antilink on" ||
+        lower === "/antilink on" ||
+        lower === "antilink on" ||
+        lower === ".antilink off" ||
+        lower === "/antilink off" ||
+        lower === "antilink off"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فقط مدیر گروه می‌تواند این تنظیم را تغییر دهد."
+          });
+          return;
+        }
+
+        settings.antilink =
+          lower.endsWith("on");
+
+        saveSettings();
+
+        await send(sock, jid, {
+          text:
+            settings.antilink
+              ? "ضد لینک فعال شد."
+              : "ضد لینک خاموش شد."
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".welcome on" ||
+        lower === "/welcome on" ||
+        lower === "welcome on" ||
+        lower === ".welcome off" ||
+        lower === "/welcome off" ||
+        lower === "welcome off"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فقط مدیر گروه می‌تواند این تنظیم را تغییر دهد."
+          });
+          return;
+        }
+
+        settings.welcome =
+          lower.endsWith("on");
+
+        saveSettings();
+
+        await send(sock, jid, {
+          text:
+            settings.welcome
+              ? "پیام خوش آمدگویی فعال شد."
+              : "پیام خوش آمدگویی خاموش شد."
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".bye on" ||
+        lower === "/bye on" ||
+        lower === "bye on" ||
+        lower === ".bye off" ||
+        lower === "/bye off" ||
+        lower === "bye off"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فقط مدیر گروه می‌تواند این تنظیم را تغییر دهد."
+          });
+          return;
+        }
+
+        settings.bye =
+          lower.endsWith("on");
+
+        saveSettings();
+
+        await send(sock, jid, {
+          text:
+            settings.bye
+              ? "پیام خروج فعال شد."
+              : "پیام خروج خاموش شد."
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".settings" ||
+        lower === "/settings" ||
+        lower === "settings"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        await send(sock, jid, {
+          text:
+            "تنظیمات گروه:\n\n" +
+            "ضد لینک: " +
+            (settings.antilink ? "فعال" : "خاموش") +
+            "\n" +
+            "خوش آمدگویی: " +
+            (settings.welcome ? "فعال" : "خاموش") +
+            "\n" +
+            "پیام خروج: " +
+            (settings.bye ? "فعال" : "خاموش")
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".linkphoto" ||
+        lower === "/linkphoto" ||
+        lower === "linkphoto" ||
+        lower === ".لینک عکس" ||
+        lower === "/لینک عکس" ||
+        lower === "لینک عکس"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        try {
+          const groupName =
+            metadata?.subject || "گروه";
+
+          const invite =
+            await sock.groupInviteCode(jid);
+
+          const link =
+            "https://chat.whatsapp.com/" +
+            invite;
+
+          let imageUrl = null;
+
+          try {
+            imageUrl =
+              await sock.profilePictureUrl(
+                jid,
+                "image"
+              );
+          } catch (e) {}
+
+          const caption =
+            "نام گروه: " +
+            groupName +
+            "\n\n" +
+            "لینک گروه:\n" +
+            link +
+            "\n\n" +
+            BOT_NAME;
+
+          if (imageUrl) {
+            await send(sock, jid, {
+              image: { url: imageUrl },
+              caption
+            });
+          } else {
+            await send(sock, jid, {
+              text: caption
+            });
+          }
+        } catch (e) {
+          await send(sock, jid, {
+            text:
+              "گرفتن لینک گروه انجام نشد."
+          });
+        }
+
+        return;
+      }
+
+      const removeCommand =
+        lower === ".remove" ||
+        lower === "/remove" ||
+        lower === "remove" ||
+        lower === ".kick" ||
+        lower === "/kick" ||
+        lower === "kick";
+
+      if (removeCommand) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فقط مدیر گروه می‌تواند این دستور را استفاده کند."
+          });
+          return;
+        }
+
+        if (!botIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "ربات باید مدیر گروه باشد."
+          });
+          return;
+        }
+
+        const mentions =
+          getMentions(msg);
+
+        if (!mentions.length) {
+          await send(sock, jid, {
+            text:
+              "عضو را تگ کن و بعد .remove یا .kick را بزن."
+          });
+          return;
+        }
+
+        for (const target of mentions) {
+          if (sameUser(target, botId)) {
+            await send(sock, jid, {
+              text: "ربات را نمی‌توان حذف کرد."
+            });
+            continue;
+          }
+
+          if (isAdmin(metadata, target)) {
+            await send(sock, jid, {
+              text:
+                "مدیر گروه را نمی‌توان حذف کرد."
+            });
+            continue;
+          }
+
+          try {
+            await sock.groupParticipantsUpdate(
+              jid,
+              [target],
+              "remove"
+            );
+
+            await send(sock, jid, {
+              text: "عضو از گروه حذف شد."
+            });
+          } catch (e) {
+            await send(sock, jid, {
+              text:
+                "حذف عضو انجام نشد."
+            });
+          }
+        }
+
+        return;
+      }
+
+      if (
+        lower === ".promote" ||
+        lower === "/promote" ||
+        lower === "promote"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin || !botIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فرستنده و ربات باید مدیر گروه باشند."
+          });
+          return;
+        }
+
+        const mentions =
+          getMentions(msg);
+
+        if (!mentions.length) {
+          await send(sock, jid, {
+            text: "عضو موردنظر را تگ کن."
+          });
+          return;
+        }
+
+        for (const target of mentions) {
+          try {
+            await sock.groupParticipantsUpdate(
+              jid,
+              [target],
+              "promote"
+            );
+          } catch (e) {
+            await send(sock, jid, {
+              text:
+                "مدیر کردن انجام نشد."
+            });
+          }
+        }
+
+        await send(sock, jid, {
+          text: "عضو مدیر شد."
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".demote" ||
+        lower === "/demote" ||
+        lower === "demote"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin || !botIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فرستنده و ربات باید مدیر گروه باشند."
+          });
+          return;
+        }
+
+        const mentions =
+          getMentions(msg);
+
+        if (!mentions.length) {
+          await send(sock, jid, {
+            text: "مدیر موردنظر را تگ کن."
+          });
+          return;
+        }
+
+        for (const target of mentions) {
+          try {
+            await sock.groupParticipantsUpdate(
+              jid,
+              [target],
+              "demote"
+            );
+          } catch (e) {
+            await send(sock, jid, {
+              text:
+                "گرفتن مدیریت انجام نشد."
+            });
+          }
+        }
+
+        await send(sock, jid, {
+          text: "مدیریت عضو گرفته شد."
+        });
+
+        return;
+      }
+
+      if (
+        lower === ".mute" ||
+        lower === "/mute" ||
+        lower === "mute"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin || !botIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فرستنده و ربات باید مدیر گروه باشند."
+          });
+          return;
+        }
+
+        try {
+          await sock.groupSettingUpdate(
+            jid,
+            "announcement"
+          );
+
+          await send(sock, jid, {
+            text:
+              "گروه بسته شد. فقط مدیران می‌توانند پیام بفرستند."
+          });
+        } catch (e) {
+          await send(sock, jid, {
+            text:
+              "بستن گروه انجام نشد."
+          });
+        }
+
+        return;
+      }
+
+      if (
+        lower === ".unmute" ||
+        lower === "/unmute" ||
+        lower === "unmute"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin || !botIsAdmin) {
+          await send(sock, jid, {
+            text:
+              "فرستنده و ربات باید مدیر گروه باشند."
+          });
+          return;
+        }
+
+        try {
+          await sock.groupSettingUpdate(
+            jid,
+            "not_announcement"
+          );
+
+          await send(sock, jid, {
+            text:
+              "گروه باز شد. همه اعضا می‌توانند پیام بفرستند."
+          });
+        } catch (e) {
+          await send(sock, jid, {
+            text:
+              "باز کردن گروه انجام نشد."
+          });
+        }
+
+        return;
+      }
+
+      if (
+        lower === ".owner" ||
+        lower === "/owner" ||
+        lower === "owner"
+      ) {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "این دستور فقط در گروه کار می‌کند."
+          });
+          return;
+        }
+
+        const owner =
+          metadata?.owner ||
+          metadata?.subjectOwner;
+
+        if (owner) {
+          await send(sock, jid, {
+            text:
+              "مالک گروه:\n@" +
+              cleanJid(owner),
+            mentions: [owner]
+          });
+        } else {
+          await send(sock, jid, {
+            text:
+              "معلومات مالک گروه از واتساپ دریافت نشد."
+          });
+        }
+
+        return;
+      }
+
+    } catch (e) {
+      console.log("Message Error:", e.message);
+    }
+  });
+}
+
+startBot().catch(err => {
+  console.log("Start Error:", err.message);
+});

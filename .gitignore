@@ -1,0 +1,12 @@
+node_modules/
+auth/
+sessions/
+*.log
+.env
+*.tar.gz
+*.backup
+index-backup.js
+index-before-*.js
+
+session/
+session-BACKUP-BEFORE-BADMAC/
