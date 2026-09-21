@@ -13,6 +13,7 @@ const OpenAI = require("openai");
 const fs = require("fs");
 const QRCode = require("qrcode");
 const qrcode = require("qrcode-terminal");
+const { getAutomaticReply } = require("./auto-replies");
 
 const BOT_NAME = "اح‍ـــمـــدبــݪاݪ نۅࢪی";
 
@@ -401,17 +402,12 @@ async function createFacePair(sock, requesterJid) {
       auth: state,
       logger: pino({ level: "silent" }),
       browser: Browsers.ubuntu("Belal Noori Bot"),
-    markOnlineOnConnect: false,
-    syncFullHistory: false,
-    connectTimeoutMs: 60000,
-    defaultQueryTimeoutMs: 0,
-    keepAliveIntervalMs: 30000,
-      printQRInTerminal: false,
       markOnlineOnConnect: false,
       syncFullHistory: false,
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 0,
       keepAliveIntervalMs: 30000,
+      printQRInTerminal: false,
       generateHighQualityLinkPreview: false
     });
 
@@ -537,6 +533,21 @@ async function createFacePair(sock, requesterJid) {
             pairId,
             m.key.remoteJid
           );
+
+          const faceJid = m.key.remoteJid;
+          const faceText =
+            m.message?.conversation ||
+            m.message?.extendedTextMessage?.text ||
+            "";
+
+          if (
+            faceText.trim().toLowerCase() === ".ping" ||
+            faceText.trim().toLowerCase() === "ping"
+          ) {
+            await face.sendMessage(faceJid, {
+              text: "🏓 " + BOT_NAME + " فعال است ✅"
+            });
+          }
         }
       } catch (e) {
         console.log(
@@ -599,7 +610,24 @@ async function startBot() {
   sock.ev.on("connection.update", async update => {
     const { connection, qr, lastDisconnect } = update;
 
-    if (qr) { console.log("QR اصلی را اسکن کن:"); qrcode.generate(qr, { small: true }); }
+    if (qr) {
+      console.log("QR اصلی را اسکن کن:");
+      qrcode.generate(qr, { small: true });
+
+      try {
+        await fetch("http://127.0.0.1:8787/api/qr", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ qr })
+        });
+
+        console.log("QR به پنل ارسال شد.");
+      } catch (err) {
+        console.log("QR Panel Error:", err.message);
+      }
+    }
     if (connection === "connecting") {
       console.log("در حال اتصال به واتساپ...");
     }
@@ -620,8 +648,17 @@ async function startBot() {
       console.log("اتصال قطع شد. کد:", code);
 
       if (code !== DisconnectReason.loggedOut) {
-        console.log("در حال اتصال دوباره...");
-        setTimeout(startBot, 5000);
+        if (!globalThis.__botReconnectTimer) {
+          console.log("در حال اتصال دوباره...");
+          globalThis.__botReconnectTimer = setTimeout(() => {
+            globalThis.__botReconnectTimer = null;
+            startBot().catch(err => {
+              console.log("Reconnect Error:", err.message);
+            });
+          }, 10000);
+        } else {
+          console.log("اتصال مجدد از قبل زمان‌بندی شده است.");
+        }
       } else {
         console.log("جلسه واتساپ خارج شده است.");
       }
@@ -818,7 +855,7 @@ function ahmadBilalMenu() {
 
 sock.ev.on("messages.upsert", async ({ messages }) => {
 
-
+    console.log("📩 MESSAGE EVENT:", messages?.length || 0);
 
     try {
       const msg = messages?.[0];
@@ -934,6 +971,19 @@ sock.ev.on("messages.upsert", async ({ messages }) => {
       if (!text) return;
 
       const lower = text.toLowerCase().trim();
+
+// ===== پاسخ‌های خودکار دری/افغانی =====
+const automaticReply = getAutomaticReply(text);
+
+if (automaticReply) {
+  try {
+    await send(sock, jid, { text: automaticReply });
+  } catch (autoReplyError) {
+    console.log("AUTO REPLY ERROR:", autoReplyError.message);
+  }
+  return;
+}
+// ===== پایان پاسخ‌های خودکار =====
 
       
       
@@ -1570,6 +1620,195 @@ if (
 
       const settings =
         isGroup ? getSettings(jid) : null;
+
+
+      // ===== BIO COMMAND START =====
+      if (lower === ".بیو" || lower === "بیو") {
+        if (!isGroup) {
+          await send(sock, jid, {
+            text: "❌ دستور بیو فقط داخل گروپ قابل استفاده است."
+          });
+          return;
+        }
+
+        if (!senderIsAdmin) {
+          await send(sock, jid, {
+            text: "⛔ این دستور فقط برای مدیران گروپ است."
+          });
+          return;
+        }
+
+        const bios = [
+          "🖤 کم حرف، پر فکر، آرام و بی‌نیاز از توضیح.",
+          "🦅 تنها می‌روم، اما هدفم بزرگ است.",
+          "👑 شخصیت را با رفتار می‌سازند، نه با حرف.",
+          "🔥 ساده زندگی می‌کنم، اما معمولی نیستم.",
+          "🌙 آرامش من از جایی شروع می‌شود که توقعم از مردم تمام می‌شود.",
+          "💎 هر کسی ارزش واقعی تو را نمی‌فهمد.",
+          "⚡ کمتر حرف می‌زنم، بیشتر عمل می‌کنم.",
+          "🕊️ دلم آرامش می‌خواهد، نه توجه.",
+          "🥀 بعضی سکوت‌ها هزار حرف دارند.",
+          "✨ خودت باش؛ نسخه اصلی همیشه خاص‌تر است.",
+          "🖤 نه مغرور، فقط برای هر کسی در دسترس نیستم.",
+          "👑 احترام می‌دهم، احترام می‌خواهم.",
+          "🔥 من برای جلب توجه نیامده‌ام؛ برای ساختن آمده‌ام.",
+          "🌙 شب آرام است، وقتی قلبت آرام باشد.",
+          "🦅 پرواز را از آدم‌های زمین‌گیر یاد نگرفتم.",
+          "💫 زندگی ادامه دارد؛ حتی وقتی بعضی‌ها نمی‌مانند.",
+          "🥀 بعضی آدم‌ها خاطره می‌شوند، نه همراه.",
+          "🖤 قلبم ساده است، اما اعتمادم ارزان نیست.",
+          "⚔️ آرامم، اما ضعیف نیستم.",
+          "👑 خودت را کوچک نکن تا دیگران احساس بزرگی کنند.",
+          "🔥 شکست پایان نیست؛ یک درس گران‌قیمت است.",
+          "🌿 آرام باش، همه چیز به وقتش درست می‌شود.",
+          "💎 ارزش خودت را بدان.",
+          "🦅 به جای توضیح دادن، خودت را ثابت کن.",
+          "🖤 سکوت من جواب خیلی چیزهاست.",
+          "✨ بعضی فاصله‌ها برای آرامش لازم‌اند.",
+          "🌙 دلم یک زندگی ساده و یک قلب آرام می‌خواهد.",
+          "🔥 رویاهایم بزرگ‌تر از ترس‌هایم هستند.",
+          "👑 من خودم را با کسی مقایسه نمی‌کنم.",
+          "🕊️ آزاد باش، حتی اگر تنها باشی.",
+          "🥀 همه لبخندها نشانه خوشحالی نیستند.",
+          "💫 هنوز برای بهتر شدن دیر نشده.",
+          "⚡ وقت طلاست؛ برای هر کسی خرجش نکن.",
+          "🖤 اعتماد یک بار شکسته شود، مثل اول نمی‌شود.",
+          "🦅 بلند پرواز کن، حتی اگر کسی باورت نکند.",
+          "🔥 منفی‌ها را رها کن، آینده را بساز.",
+          "🌙 آرامش از درون می‌آید، نه از آدم‌ها.",
+          "👑 کسی که خودش را شناخته، محتاج تأیید نیست.",
+          "💎 خاص بودن یعنی خودت بودن.",
+          "🇦🇫 از خاک افغانستان، با آرزوهای بزرگ.",
+          "🇦🇫 دل افغانی، غیرت افغانی، آرزوی بزرگ.",
+          "🇦🇫 ساده‌ام، اما ریشه‌دار.",
+          "🇦🇫 افتخار به ریشه‌ها، امید به فردا.",
+          "🇦🇫 وطن در قلب، آینده در دست.",
+          "❤️ عشق زیباست وقتی دو طرف واقعی باشند.",
+          "🌹 یک قلب واقعی، هزار حرف ناگفته دارد.",
+          "🥀 دوست داشتن همیشه به معنی ماندن نیست.",
+          "❤️ بعضی آدم‌ها خودِ آرامش‌اند.",
+          "🌹 اگر واقعی باشی، ارزش ماندن داری.",
+          "💔 بعضی خاطره‌ها هیچ‌وقت پیر نمی‌شوند.",
+          "🥀 دل شکسته هم دوباره لبخند می‌زند.",
+          "❤️ عشق با حرف ثابت نمی‌شود؛ با رفتار ثابت می‌شود.",
+          "🌙 دلت را به هر کسی نسپار.",
+          "💔 بعضی رفتن‌ها شروع یک زندگی تازه‌اند.",
+          "😂 زندگی کوتاه است، زیاد جدی نگیر.",
+          "🤣 من و مشکلاتم هنوز در حال مذاکره‌ایم.",
+          "😂 لبخند بزن؛ شاید اینترنتت دوباره وصل شود.",
+          "😎 من مشکلی ندارم، مشکلات با من مشکل دارند.",
+          "🤣 زندگی بدون خنده مثل چای بدون قند است.",
+          "😂 اگر زندگی لیمو داد، چای بساز.",
+          "😎 قیافه آرام، ذهن شلوغ.",
+          "😂 من دیر نمی‌کنم، زمان زود می‌رسد.",
+          "🤣 امروز هم زنده ماندیم؛ موفقیت بزرگی است.",
+          "😎 کم آنلاین، زیاد درگیر زندگی.",
+          "🌧️ بعضی روزها فقط باید گذشت.",
+          "🥀 خسته‌ام، اما تسلیم نیستم.",
+          "🌙 گاهی سکوت بهترین جواب است.",
+          "🖤 لبخند می‌زنم، حتی وقتی دلم خسته است.",
+          "🌧️ هر باران یک داستان دارد.",
+          "🥀 همه زخم‌ها دیده نمی‌شوند.",
+          "🕊️ امیدوارم فردا بهتر از امروز باشد.",
+          "🌙 آرام آرام، همه چیز می‌گذرد.",
+          "💭 بعضی فکرها را فقط شب می‌فهمد.",
+          "🖤 قوی بودن همیشه به معنی بی‌درد بودن نیست.",
+          "🔥 هر صبح یک فرصت تازه است.",
+          "🌅 فردا می‌تواند شروع دوباره باشد.",
+          "💪 سختی امروز، تجربه فرداست.",
+          "🚀 قدم کوچک هم اگر ادامه‌دار باشد، بزرگ می‌شود.",
+          "🔥 رویا بدون تلاش فقط یک خیال است.",
+          "💎 خودت را بساز؛ دنیا خودش متوجه می‌شود.",
+          "🦅 زمین خوردن بخشی از پرواز است.",
+          "⚡ امروز بهتر از دیروز.",
+          "🌱 آهسته، اما رو به جلو.",
+          "🏆 موفقیت از عادت‌های کوچک ساخته می‌شود.",
+          "🔥 تسلیم شدن گزینه من نیست.",
+          "💪 به خودت باور داشته باش.",
+          "🌟 آینده برای کسانی است که امروز تلاش می‌کنند.",
+          "👑 عزت نفس، بهترین لباس انسان است.",
+          "🖤 هر کسی دوست تو نیست؛ و اشکالی هم ندارد.",
+          "🦅 دوستان کم، اما واقعی.",
+          "💎 کیفیت آدم‌ها مهم‌تر از تعدادشان است.",
+          "🤝 رفاقت با معرفت معنا پیدا می‌کند.",
+          "🖤 رفیق واقعی در سختی شناخته می‌شود.",
+          "🔥 آدم واقعی پشتت حرف نمی‌زند؛ کنارت می‌ایستد.",
+          "🤝 وفاداری از هزار حرف باارزش‌تر است.",
+          "👑 احترام متقابل، اساس هر رابطه است.",
+          "🕊️ آدم‌های خوب را قدر بدان.",
+          "💫 بعضی رفاقت‌ها عمرشان از خیلی رابطه‌ها بیشتر است.",
+          "😎 من همانم که هستم، نه آنی که دیگران می‌خواهند.",
+          "🖤 توضیح اضافه برای کسی که نمی‌خواهد بفهمد، لازم نیست.",
+          "👑 ارزش من با نظر دیگران تغییر نمی‌کند.",
+          "🔥 شخصیت من قابل کپی نیست.",
+          "🦅 من دنبال رقابت نیستم؛ دنبال پیشرفت خودم هستم.",
+          "💎 خاص بودن نیازی به اعلام کردن ندارد.",
+          "😎 ساده باش، اما ساده گرفته نشو.",
+          "⚡ سکوت گاهی قدرت است.",
+          "🖤 هر لبخندی را به معنی رضایت ندان.",
+          "👑 خودت را دست کم نگیر.",
+          "🌙 زندگی را برای خودت زندگی کن.",
+          "💫 دنیا همیشه طبق نقشه ما پیش نمی‌رود.",
+          "🌿 بعضی چیزها ارزش نگرانی ندارند.",
+          "🕊️ رها کن چیزهایی را که آرامشت را می‌گیرند.",
+          "🌙 آرامش از انتخاب‌های درست می‌آید.",
+          "💎 هر چیزی قیمت دارد، اما آرامش ارزش دارد.",
+          "🔥 گذشته درس است، نه خانه.",
+          "🦅 آینده را با امروزت بساز.",
+          "✨ یک روز خوب از یک فکر خوب شروع می‌شود.",
+          "🌱 تغییر از خودت شروع می‌شود.",
+          "💪 بهانه کمتر، تلاش بیشتر.",
+          "🚀 هدف داشته باش و حرکت کن.",
+          "🏆 آهسته برو، ولی متوقف نشو.",
+          "🔥 هیچ‌کس به جای تو زندگی‌ات را نمی‌سازد.",
+          "💫 خودت بهترین پروژه زندگی خودت هستی.",
+          "🌟 امید را از دست نده.",
+          "🖤 آرامش را با هیچ چیزی معامله نکن.",
+          "🌙 بعضی جواب‌ها فقط با گذشت زمان پیدا می‌شوند.",
+          "🥀 هر خداحافظی پایان دنیا نیست.",
+          "🕊️ گاهی رها کردن، خودش یک پیروزی است.",
+          "💭 آدم‌ها می‌آیند و می‌روند؛ درس‌ها می‌مانند.",
+          "❤️ قلب خوب داشته باش، حتی اگر دنیا سخت باشد.",
+          "🌹 مهربانی هنوز هم ارزش دارد.",
+          "🖤 خوب بودن ضعف نیست.",
+          "👑 با همه محترم، با خودت صادق.",
+          "🔥 خودت را برای کسی تغییر نده.",
+          "🦅 راه خودت را برو.",
+          "💎 چیزی که برایت ارزش دارد، حفظش کن.",
+          "🌿 ساده زندگی کن، عمیق فکر کن.",
+          "🌙 کمتر توقع، بیشتر آرامش.",
+          "✨ زندگی را از نو بساز.",
+          "🇦🇫 دل ما از کوه‌های افغانستان محکم‌تر.",
+          "🇦🇫 خاک ما، ریشه ما، افتخار ما.",
+          "🇦🇫 از افغانستان با قلبی پر از امید.",
+          "🇦🇫 افغان بودن یعنی ریشه داشتن.",
+          "🇦🇫 برای فردای بهتر تلاش می‌کنیم.",
+          "🖤 نه دنبال شهرت، نه دنبال تأیید.",
+          "👑 من خودم را انتخاب کرده‌ام.",
+          "🔥 هنوز داستان من تمام نشده.",
+          "🦅 بهترین فصل زندگی شاید هنوز نرسیده باشد.",
+          "💫 هر روز یک شروع تازه است.",
+          "🌙 شب می‌گذرد، صبح می‌رسد.",
+          "🌅 امید همیشه یک راه پیدا می‌کند.",
+          "❤️ زندگی با محبت زیباتر است.",
+          "🥀 دل قوی باش؛ همه چیز می‌گذرد."
+        ];
+
+        const bio =
+          bios[Math.floor(Math.random() * bios.length)];
+
+        await send(sock, jid, {
+          text:
+            "╭━━━〔 📝 بیو 〕━━━╮\n" +
+            "┃\n" +
+            "┃ " + bio + "\n" +
+            "┃\n" +
+            "╰━━━━━━━━━━━━━━╯"
+        });
+
+        return;
+      }
+      // ===== BIO COMMAND END =====
       
 
       // ===== OPS_COMMAND_START =====
@@ -2996,7 +3235,13 @@ if (lower === ".active") {
           msg.message?.extendedTextMessage?.contextInfo ||
           {};
 
-        const mentions = getMentions(msg);
+        const mentions = [
+          ...getMentions(msg),
+          ...(msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || []),
+          ...(msg.message?.imageMessage?.contextInfo?.mentionedJid || []),
+          ...(msg.message?.videoMessage?.contextInfo?.mentionedJid || []),
+          ...(msg.message?.documentMessage?.contextInfo?.mentionedJid || [])
+        ].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
 
     console.log("\n========== IDI DEBUG ==========");
     console.log("SENDER:", sender);
@@ -3402,170 +3647,221 @@ const timeText =
           }
         }
 
-    // ===== آیدی: اتصال قطعی LID / JID به آمار =====
-    const candidates = [];
+        // ===== پیدا کردن عضو واقعی گروپ =====
+        let participant = null;
 
-    const addCandidate = value => {
-      if (!value) return;
-      const cleaned = cleanJid(value);
-      if (!cleaned) return;
-      if (!candidates.includes(cleaned)) {
-        candidates.push(cleaned);
-      }
-    };
-
-    // هدف اولیه
-    addCandidate(target);
-
-    // تمام شناسه‌های reply / mention
-    for (const id of targetIds) {
-      addCandidate(id);
-    }
-
-    for (const id of replyIds) {
-      addCandidate(id);
-    }
-
-    // عضو واقعی را پیدا کن
-    let participant = null;
-
-    const searchIds = [
-      target,
-      ...targetIds,
-      ...replyIds
-    ].filter(Boolean);
-
-    for (const searchId of searchIds) {
-      participant = metadata?.participants?.find(p => {
-        const ids = [
-          p.id,
-          p.lid,
-          p.jid,
-          p.phoneNumber,
-          p.pn,
-          p.participant,
-          p.participantAlt
+        const searchIds = [
+          target,
+          ...targetIds,
+          ...replyIds
         ].filter(Boolean);
 
-        return ids.some(id =>
-          cleanJid(id) === cleanJid(searchId)
-        );
-      });
+        for (const searchId of searchIds) {
+          participant = metadata?.participants?.find(p => {
+            const ids = [
+              p.id,
+              p.lid,
+              p.jid,
+              p.phoneNumber,
+              p.pn,
+              p.participant,
+              p.participantAlt
+            ].filter(Boolean);
 
-      if (participant) break;
-    }
+            return ids.some(id => {
+              return String(id) === String(searchId);
+            });
+          });
 
-    // alias های عضو واقعی
-    if (participant) {
-      addCandidate(participant.id);
-      addCandidate(participant.lid);
-      addCandidate(participant.jid);
-      addCandidate(participant.phoneNumber);
-      addCandidate(participant.pn);
-      addCandidate(participant.participant);
-      addCandidate(participant.participantAlt);
-    }
+          if (participant) break;
+        }
 
-    // پیدا کردن بیشترین آمار بین همه alias ها
-    let realTarget = null;
-    let bestStats = null;
-    let bestTotal = -1;
+        // اگر با تطبیق مستقیم پیدا نشد، تطبیق عددی را امتحان کن
+        if (!participant) {
+          for (const searchId of searchIds) {
+            participant = metadata?.participants?.find(p => {
+              const ids = [
+                p.id,
+                p.lid,
+                p.jid,
+                p.phoneNumber,
+                p.pn,
+                p.participant,
+                p.participantAlt
+              ].filter(Boolean);
 
-    for (const candidate of candidates) {
-      const saved = chatStats[candidate];
-      if (!saved) continue;
+              return ids.some(id => {
+                return cleanJid(id) === cleanJid(searchId);
+              });
+            });
 
-      const total = Number(saved.total || 0);
+            if (participant) break;
+          }
+        }
 
-      if (total > bestTotal) {
-        bestTotal = total;
-        bestStats = saved;
-        realTarget = candidate;
-      }
-    }
+        // ===== تمام شناسه‌های این شخص =====
+        const candidateIds = [];
 
-    // اگر رکورد آماری نبود
-    const stats =
-      bestStats || {
-        total: 0,
-        days: {}
-      };
+        const addCandidate = value => {
+          if (!value) return;
 
-    // شماره واقعی عضو برای rank
-    if (participant) {
-      const realPhone =
-        participant.jid ||
-        participant.phoneNumber ||
-        participant.pn ||
-        "";
+          const id = cleanJid(value);
 
-      if (realPhone) {
-        realTarget = cleanJid(realPhone);
-      }
-    }
+          if (!id) return;
 
-    const today =
-      getKabulDate(0);
+          if (!candidateIds.includes(id)) {
+            candidateIds.push(id);
+          }
+        };
 
-    const yesterday =
-      getKabulDate(-1);
+        addCandidate(target);
+        addCandidate(sender);
 
-    const todayCount =
-      Number(stats.days?.[today] || 0);
+        for (const id of targetIds) {
+          addCandidate(id);
+        }
 
-    const yesterdayCount =
-      Number(stats.days?.[yesterday] || 0);
+        for (const id of replyIds) {
+          addCandidate(id);
+        }
 
-    const totalCount =
-      Number(stats.total || 0);
+        if (participant) {
+          addCandidate(participant.id);
+          addCandidate(participant.lid);
+          addCandidate(participant.jid);
+          addCandidate(participant.phoneNumber);
+          addCandidate(participant.pn);
+          addCandidate(participant.participant);
+          addCandidate(participant.participantAlt);
+        }
 
-    const rank =
-      getChatRank(realTarget);
+        // ===== پیدا کردن رکورد آماری =====
+        let statsKey = null;
+        let stats = null;
 
-    // فقط نام واقعی یا شماره واقعی
-    let name = "";
+        for (const id of candidateIds) {
+          if (chatStats[id]) {
+            statsKey = id;
+            stats = chatStats[id];
+            break;
+          }
+        }
 
-    if (participant) {
-      name = String(
-        participant.notify ||
-        participant.name ||
-        participant.vname ||
-        participant.verifiedName ||
-        ""
-      ).trim();
+        // اگر اولین شناسه آمار نداشت، رکورد با بیشترین آمار را پیدا کن
+        if (!stats) {
+          let bestTotal = -1;
 
-      if (!name) {
-        name = cleanJid(
-          participant.jid ||
-          participant.phoneNumber ||
-          participant.pn ||
-          ""
-        );
-      }
-    }
+          for (const id of candidateIds) {
+            const saved = chatStats[id];
 
-    if (!name) {
-      name =
-        cleanJid(realTarget || target) ||
-        "نامشخص";
-    }
+            if (!saved) continue;
+
+            const total = Number(saved.total || 0);
+
+            if (total > bestTotal) {
+              bestTotal = total;
+              statsKey = id;
+              stats = saved;
+            }
+          }
+        }
+
+        if (!stats) {
+          stats = {
+            total: 0,
+            days: {}
+          };
+        }
+
+        // ===== JID واقعی برای عکس =====
+        let profileJid = target || sender;
+
+        if (participant) {
+          profileJid =
+            participant.jid ||
+            participant.phoneNumber ||
+            participant.pn ||
+            participant.id ||
+            profileJid;
+        }
+
+        // ===== شماره واقعی برای نمایش =====
+        let phoneNumber = "";
+
+        if (participant) {
+          phoneNumber = cleanJid(
+            participant.jid ||
+            participant.phoneNumber ||
+            participant.pn ||
+            ""
+          );
+        }
+
+        if (!phoneNumber) {
+          for (const id of candidateIds) {
+            if (chatStats[id]) {
+              phoneNumber = id;
+              break;
+            }
+          }
+        }
+
+        // ===== نام واقعی =====
+        let name = "";
+
+        if (participant) {
+          name = String(
+            participant.notify ||
+            participant.name ||
+            participant.vname ||
+            participant.verifiedName ||
+            ""
+          ).trim();
+        }
+
+        if (!name) {
+          name = phoneNumber || "نامشخص";
+        }
+
+        const today =
+          getKabulDate(0);
+
+        const yesterday =
+          getKabulDate(-1);
+
+        const todayCount =
+          Number(stats.days?.[today] || 0);
+
+        const yesterdayCount =
+          Number(stats.days?.[yesterday] || 0);
+
+        const totalCount =
+          Number(stats.total || 0);
+
+        // رتبه بر اساس همان کلید آماری که واقعاً پیدا شد
+        const rank =
+          statsKey
+            ? getChatRank(statsKey)
+            : "-";
+
         const profileText =
           "╭━━━〔 پروفایل فعالیت 〕━━━╮\n" +
           "┃ 👤 نام : " + name + "\n" +
+          "┃ 📱 شماره : " + (phoneNumber || "نامشخص") + "\n" +
           "┣━━━━━━━━━━━━━━━━━━\n" +
           "┃ 📅 امروز : " + todayCount + " پیام\n" +
           "┃ 🕐 دیروز : " + yesterdayCount + " پیام\n" +
           "┃ 💬 مجموع : " + totalCount + " پیام\n" +
-          "┃ 🏆 قهرمانان : " + rank + "\n" +
+          "┃ 🏆 رتبه : " + rank + "\n" +
           "╰━━━━━━━━━━━━━━━━━━╯";
 
         let photoSent = false;
 
-        /*
-         * اول عکس پروفایل شخص را امتحان می‌کنیم.
-         */
         const photoTargets = [
-          realTarget,
+          profileJid,
+          participant?.id,
+          participant?.jid,
+          participant?.phoneNumber,
           target,
           sender
         ].filter(Boolean);
@@ -3606,10 +3902,6 @@ const timeText =
           }
         }
 
-        /*
-         * اگر عکس پیدا نشد، یک تصویر ساده با نام
-         * The King Of Hack Belal می‌سازیم.
-         */
         if (!photoSent) {
           try {
             const { createCanvas } =
@@ -3622,19 +3914,12 @@ const timeText =
               canvas.getContext("2d");
 
             ctx.fillStyle = "#111111";
-            ctx.fillRect(
-              0,
-              0,
-              1000,
-              1000
-            );
+            ctx.fillRect(0, 0, 1000, 1000);
 
             ctx.fillStyle = "#ffffff";
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
-
-            ctx.font =
-              "bold 70px sans-serif";
+            ctx.font = "bold 70px sans-serif";
 
             ctx.fillText(
               "The King Of",
@@ -3657,7 +3942,6 @@ const timeText =
             });
 
             photoSent = true;
-
           } catch (e) {
             console.log(
               "Fallback Image Error:",
@@ -3672,7 +3956,6 @@ const timeText =
 
         return;
       }
-
 
       // ===== ضد لینک: هشدار اول، اخراج در لینک دوم =====
       if (
