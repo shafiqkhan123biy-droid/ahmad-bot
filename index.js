@@ -17,9 +17,9 @@ const { getAutomaticReply } = require("./auto-replies");
 
 const BOT_NAME = "اح‍ـــمـــدبــݪاݪ نۅࢪی";
 
-const openaiClient = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const openaiClient = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
 
 async function askChatGPT(question) {
   const response = await openaiClient.responses.create({
