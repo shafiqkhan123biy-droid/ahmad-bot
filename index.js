@@ -370,12 +370,15 @@ async function send(sock, jid, content) {
 const faceSockets = new Map();
 let facePairCounter = 0;
 
-async function createFacePair(sock, requesterJid) {
-  const number = cleanJid(requesterJid);
+async function createFacePair(sock, requesterJid, requestedNumber) {
+  const phoneNumber = String(requestedNumber || "").replace(/\D/g, "");
 
-  if (!number) {
+  if (!phoneNumber || phoneNumber.length < 8 || phoneNumber.length > 15) {
     await send(sock, requesterJid, {
-      text: "شناسه کاربر دریافت نشد."
+      text:
+        "❌ شماره صحیح نیست.\n\n" +
+        "فرمت درست:\n" +
+        ".pair +93785722787"
     });
     return;
   }
@@ -393,6 +396,7 @@ async function createFacePair(sock, requesterJid) {
 
   let face = null;
   let reconnecting = false;
+  let pairingCodeSent = false;
 
   const connectFace = async () => {
     const { state, saveCreds } =
@@ -415,42 +419,12 @@ async function createFacePair(sock, requesterJid) {
 
     face.ev.on("creds.update", saveCreds);
 
-    let qrSent = false;
-
     face.ev.on("connection.update", async update => {
       try {
         const {
           connection,
-          qr,
           lastDisconnect
         } = update;
-
-        if (qr && !qrSent) {
-          qrSent = true;
-
-          const dataUrl =
-            await QRCode.toDataURL(qr, {
-              errorCorrectionLevel: "H",
-              margin: 2,
-              width: 900
-            });
-
-          const imageBuffer = Buffer.from(
-            dataUrl.split(",")[1],
-            "base64"
-          );
-
-          await send(sock, requesterJid, {
-            image: imageBuffer,
-            caption:
-              "QR اتصال آماده است.\n\n" +
-              "واتساپ → دستگاه‌های مرتبط → اتصال دستگاه\n" +
-              "سپس این QR را اسکن کن.\n\n" +
-              "این QR مخصوص همین Session است."
-          });
-
-          console.log("QR ساخته شد:", pairId);
-        }
 
         if (connection === "open") {
           reconnecting = false;
@@ -482,8 +456,7 @@ async function createFacePair(sock, requesterJid) {
             faceSockets.delete(pairId);
 
             await send(sock, requesterJid, {
-              text:
-                "این Session از واتساپ خارج شد."
+              text: "این Session از واتساپ خارج شد."
             });
 
             return;
@@ -535,6 +508,7 @@ async function createFacePair(sock, requesterJid) {
           );
 
           const faceJid = m.key.remoteJid;
+
           const faceText =
             m.message?.conversation ||
             m.message?.extendedTextMessage?.text ||
@@ -557,16 +531,59 @@ async function createFacePair(sock, requesterJid) {
         );
       }
     });
+
+    if (!state.creds.registered && !pairingCodeSent) {
+      pairingCodeSent = true;
+
+      setTimeout(async () => {
+        try {
+          const code =
+            await face.requestPairingCode(phoneNumber);
+
+          console.log("");
+          console.log("================================");
+          console.log("PAIRING CODE:", code);
+          console.log("NUMBER:", phoneNumber);
+          console.log("SESSION:", pairId);
+          console.log("================================");
+          console.log("");
+
+          await send(sock, requesterJid, {
+            text:
+              "🔐 کد اتصال واتساپ\n\n" +
+              "📱 شماره: +" + phoneNumber + "\n" +
+              "🔢 کد ۸ رقمی: " + code + "\n\n" +
+              "واتساپ → دستگاه‌های مرتبط → اتصال دستگاه\n" +
+              "سپس گزینه «اتصال با شماره تلفن» را انتخاب کن و این کد را وارد کن.\n\n" +
+              "⏳ کد را به‌موقع وارد کن."
+          });
+        } catch (e) {
+          pairingCodeSent = false;
+
+          console.log(
+            "Pairing Code Error:",
+            pairId,
+            e.message
+          );
+
+          await send(sock, requesterJid, {
+            text:
+              "❌ خطا در ساخت کد اتصال.\n\n" +
+              e.message
+          });
+        }
+      }, 1500);
+    }
   };
 
   try {
-    await connectFace();
-
     await send(sock, requesterJid, {
       text:
-        "در حال ساخت QR اتصال...\n" +
+        "⏳ در حال ساخت کد اتصال...\n" +
         "لطفاً چند لحظه صبر کن."
     });
+
+    await connectFace();
   } catch (e) {
     console.log(
       "Face Pair Error:",
@@ -578,8 +595,8 @@ async function createFacePair(sock, requesterJid) {
 
     await send(sock, requesterJid, {
       text:
-        "خطا در ساخت این QR.\n" +
-        "دوباره .pair بفرست."
+        "❌ خطا در ساخت کد اتصال.\n" +
+        "دوباره .pair +شماره را بفرست."
     });
   }
 }
@@ -4058,9 +4075,30 @@ const timeText =
       if (
         lower === ".pair" ||
         lower === "/pair" ||
-        lower === "pair"
+        lower === "pair" ||
+        lower.startsWith(".pair ") ||
+        lower.startsWith("/pair ") ||
+        lower.startsWith("pair ")
       ) {
-        try { await createFacePair(sock, sender); } catch (e) { console.log("PAIR ERROR:", e); await send(sock, jid, { text: "خطای Pair: " + (e.message || e) }); }
+        try {
+          const pairParts = text.trim().split(/\s+/);
+          const pairNumber = pairParts[1] || "";
+
+          await createFacePair(
+            sock,
+            sender,
+            pairNumber
+          );
+        } catch (e) {
+          console.log("PAIR ERROR:", e);
+
+          await send(sock, jid, {
+            text:
+              "خطای Pair: " +
+              (e.message || e)
+          });
+        }
+
         return;
       }
 
